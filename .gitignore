@@ -1,0 +1,27 @@
+# Packaging hygiene. This exists because build artifacts landing in release
+# archives has bitten this workflow before — .venv and __pycache__ shipped
+# inside ViralForge tarballs more than once.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# runtime state — never commit, never ship
+*.db
+*.db-wal
+*.db-shm
+/data/
+uploads/
+.env
+
+# corpus + harvest output can be gigabytes
+apk-corpus/
+*-results/
+*.apk
+*.aab
+harvest.json

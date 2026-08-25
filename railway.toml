@@ -1,0 +1,15 @@
+# One uvicorn worker on purpose. Analysis concurrency comes from the
+# ProcessPoolExecutor inside the app (NULLSCAN_WORKERS), not from uvicorn
+# workers — multiple uvicorn workers would each spawn their own pool and
+# each open their own SQLite writer. One web process, N analysis processes.
+[build]
+builder = "NIXPACKS"
+
+[deploy]
+startCommand = "uvicorn service.main:app --host 0.0.0.0 --port $PORT --workers 1"
+healthcheckPath = "/healthz"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+
+[[deploy.volumes]]
+mountPath = "/data"

@@ -1,0 +1,74 @@
+# NULLSCAN compliance gate — drop-in GitHub Action.
+#
+# Fails the build when it would make a previously-accurate Play Data Safety
+# declaration wrong, or introduces a new high-severity finding.
+#
+# The baseline is the report from the last build you SHIPPED, not the last
+# build you ran. Comparing against the previous commit tells you what changed
+# since yesterday; comparing against the shipped build tells you what your live
+# Play Console listing is now wrong about. Only the second one matters.
+name: 'NULLSCAN compliance gate'
+description: 'Catch Data Safety declaration drift before Play review does'
+branding:
+  icon: 'shield'
+  color: 'orange'
+
+inputs:
+  apk:
+    description: 'Path to the APK or AAB to check'
+    required: true
+  baseline:
+    description: 'Path to the baseline JSON report from your last shipped build'
+    required: false
+    default: ''
+  fail-on-drift:
+    description: 'Fail the job when the declaration would change'
+    required: false
+    default: 'true'
+  api-key:
+    description: 'NULLSCAN API key. Omitted = local engine, nothing leaves the runner.'
+    required: false
+    default: ''
+
+outputs:
+  report:
+    description: 'Path to the JSON report for this build'
+    value: ${{ steps.scan.outputs.report }}
+  blocking:
+    description: 'true when the declaration would change'
+    value: ${{ steps.scan.outputs.blocking }}
+
+runs:
+  using: composite
+  steps:
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        NULLSCAN_API_KEY: ${{ inputs.api-key }}
+      run: |
+        set -euo pipefail
+        out="${RUNNER_TEMP:-/tmp}/nullscan-report.json"
+        python3 "${{ github.action_path }}/../cli.py" scan "${{ inputs.apk }}" --json > "$out"
+        echo "report=$out" >> "$GITHUB_OUTPUT"
+
+        if [ -z "${{ inputs.baseline }}" ] || [ ! -f "${{ inputs.baseline }}" ]; then
+          echo "::notice::No baseline yet. Commit this report as your baseline:"
+          echo "::notice::  $out"
+          echo "blocking=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        set +e
+        python3 "${{ github.action_path }}/../cli.py" diff \
+          "${{ inputs.baseline }}" "$out" --fail-on-drift
+        drift=$?
+        set -e
+
+        if [ "$drift" -ne 0 ]; then
+          echo "blocking=true" >> "$GITHUB_OUTPUT"
+          echo "::error::This build changes your Play Data Safety declaration. Update the form before shipping."
+          [ "${{ inputs.fail-on-drift }}" = "true" ] && exit 1
+        else
+          echo "blocking=false" >> "$GITHUB_OUTPUT"
+        fi

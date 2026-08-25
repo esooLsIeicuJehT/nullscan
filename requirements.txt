@@ -1,0 +1,11 @@
+# SERVICE LAYER ONLY.
+#
+# Do NOT install this to scan APKs. core/, cli.py and tools/harvest.py are
+# stdlib-only by design — they run on a bare Python 3 with nothing installed.
+#
+# On Termux this install FAILS: pydantic-core is Rust and has no prebuilt
+# aarch64-linux-android wheel. You don't need it there. See QUICKSTART.md step 0.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+python-multipart>=0.0.9

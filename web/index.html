@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NULLSCAN — see what your APK actually collects</title>
+<meta name="description" content="Drop an Android APK. Get its Play Data Safety declaration, with the bytecode evidence for every line.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#0A0D13; --panel:#131820; --panel-2:#0F141C; --line:#1F2733;
+  --text:#DDE3EC; --dim:#7B8798; --dimmer:#4E5A68;
+  --high:#FF6B5A; --med:#F5A623; --clear:#5CC8A8; --info:#6E93C8;
+  --mono:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+  --sans:'IBM Plex Sans',system-ui,-apple-system,sans-serif;
+  --maxw:1080px;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;background:var(--ink);color:var(--text);
+  font-family:var(--sans);font-size:16px;line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+a{color:inherit}
+
+/* ---------- masthead ---------- */
+.masthead{border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(10,13,19,.88);backdrop-filter:blur(8px);z-index:20}
+.masthead .wrap{display:flex;align-items:center;justify-content:space-between;height:60px}
+.brand{font-family:var(--mono);font-weight:600;letter-spacing:-.02em;font-size:15px}
+.brand span{color:var(--med)}
+.masthead nav{display:flex;gap:22px;font-size:13.5px;color:var(--dim)}
+.masthead nav a{text-decoration:none}
+.masthead nav a:hover{color:var(--text)}
+@media(max-width:640px){.masthead nav{display:none}}
+
+/* ---------- hero: evidence resolving into a declaration ---------- */
+.hero{padding:72px 0 56px}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-bottom:26px}
+h1{
+  font-family:var(--mono);font-weight:600;letter-spacing:-.035em;
+  font-size:clamp(28px,5.4vw,50px);line-height:1.12;margin:0 0 20px;max-width:17ch;
+}
+h1 em{font-style:normal;color:var(--med)}
+.lede{font-size:clamp(16px,2.1vw,19px);color:var(--dim);max-width:56ch;margin:0 0 40px}
+
+.resolve{
+  border:1px solid var(--line);border-radius:6px;background:var(--panel-2);
+  font-family:var(--mono);font-size:13px;overflow:hidden;
+}
+.resolve-row{padding:15px 18px;border-bottom:1px solid var(--line);display:flex;gap:14px;align-items:flex-start}
+.resolve-row:last-child{border-bottom:0}
+.rtag{color:var(--dimmer);flex:0 0 74px;font-size:11.5px;letter-spacing:.09em;text-transform:uppercase;padding-top:2px}
+.rbody{min-width:0;flex:1;word-break:break-all}
+.rbody .sink{color:var(--text)}
+.rbody .arrow{color:var(--dimmer)}
+.rbody .cat{color:var(--med)}
+.rbody .bad{color:var(--high)}
+.rbody .good{color:var(--clear)}
+.caret{display:inline-block;width:7px;height:15px;background:var(--med);vertical-align:-3px;animation:blink 1.05s steps(2,start) infinite}
+@keyframes blink{to{visibility:hidden}}
+.reveal{opacity:0;transform:translateY(4px);animation:rise .45s ease forwards}
+@keyframes rise{to{opacity:1;transform:none}}
+
+/* ---------- scanner ---------- */
+.scanner{padding:8px 0 72px}
+.drop{
+  border:1px dashed #2A3542;border-radius:8px;background:var(--panel);
+  padding:44px 28px;text-align:center;transition:border-color .18s,background .18s;
+}
+.drop.over{border-color:var(--med);background:#161C26}
+.drop h2{font-family:var(--mono);font-size:17px;font-weight:600;margin:0 0 8px;letter-spacing:-.02em}
+.drop p{color:var(--dim);font-size:14px;margin:0 0 22px}
+.btn{
+  font-family:var(--mono);font-size:13.5px;font-weight:500;
+  background:var(--med);color:#15100A;border:0;border-radius:5px;
+  padding:11px 22px;cursor:pointer;letter-spacing:-.01em;
+}
+.btn:hover{background:#FFB945}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}
+.btn.ghost:hover{background:var(--panel);border-color:#2A3542}
+:focus-visible{outline:2px solid var(--med);outline-offset:2px}
+.fineprint{font-family:var(--mono);font-size:11.5px;color:var(--dimmer);margin-top:16px}
+
+.progress{display:none;margin-top:22px;font-family:var(--mono);font-size:12.5px;color:var(--dim);text-align:left}
+.progress.on{display:block}
+.bar{height:2px;background:var(--line);border-radius:2px;overflow:hidden;margin-bottom:12px}
+.bar i{display:block;height:100%;width:0;background:var(--med);transition:width .5s ease}
+.stage{display:flex;gap:9px;padding:3px 0}
+.stage b{color:var(--dimmer);font-weight:400;flex:0 0 16px}
+.stage.done b{color:var(--clear)}
+.stage.done{color:var(--text)}
+
+.err{display:none;margin-top:18px;border-left:2px solid var(--high);background:#1A1315;padding:13px 16px;font-family:var(--mono);font-size:12.5px;color:#FFB3A8}
+.err.on{display:block}
+
+/* ---------- report ---------- */
+.report{display:none;margin-top:34px}
+.report.on{display:block}
+.rhead{display:flex;flex-wrap:wrap;gap:12px 26px;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:16px;margin-bottom:26px}
+.rhead .pkg{font-family:var(--mono);font-size:18px;font-weight:600;letter-spacing:-.02em}
+.rhead .meta{font-family:var(--mono);font-size:12px;color:var(--dim)}
+.sec{margin-bottom:36px}
+.sec h3{font-family:var(--mono);font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);font-weight:500;margin:0 0 14px}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-family:var(--mono);font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--dimmer);font-weight:500;padding:0 12px 9px 0;border-bottom:1px solid var(--line)}
+td{padding:11px 12px 11px 0;border-bottom:1px solid #171E28;vertical-align:top}
+.pill{font-family:var(--mono);font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;padding:2px 7px;border-radius:3px;white-space:nowrap}
+.p-high{background:#2A1512;color:var(--high)}
+.p-med{background:#2A2110;color:var(--med)}
+.p-low{background:#132028;color:var(--info)}
+.p-info{background:#171C24;color:var(--dim)}
+.p-yes{background:#12241E;color:var(--clear)}
+.mono{font-family:var(--mono);font-size:12px}
+.ev{font-family:var(--mono);font-size:11.5px;color:var(--dim);word-break:break-all;display:block;margin-top:5px}
+.fix{font-size:12.5px;color:var(--info);display:block;margin-top:6px}
+.scroller{overflow-x:auto}
+
+/* ---------- pipeline ---------- */
+.pipe{border-top:1px solid var(--line);padding:64px 0}
+.pipe-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:6px;overflow:hidden}
+@media(max-width:760px){.pipe-grid{grid-template-columns:1fr}}
+.step{background:var(--panel-2);padding:26px 22px}
+.step .n{font-family:var(--mono);font-size:11px;color:var(--med);letter-spacing:.12em;margin-bottom:10px}
+.step h4{font-family:var(--mono);font-size:15px;font-weight:600;margin:0 0 8px;letter-spacing:-.02em}
+.step p{margin:0;font-size:13.5px;color:var(--dim)}
+
+
+/* ---------- pricing ---------- */
+.plans{border-top:1px solid var(--line);padding:64px 0}
+.plans h2{font-family:var(--mono);font-size:clamp(20px,3.2vw,28px);font-weight:600;letter-spacing:-.03em;margin:0 0 8px}
+.plans .sub{color:var(--dim);margin:0 0 32px;max-width:52ch}
+.cards{display:grid;grid-template-columns:repeat(2,1fr);gap:18px;max-width:720px}
+@media(max-width:700px){.cards{grid-template-columns:1fr}}
+.card{border:1px solid var(--line);border-radius:8px;background:var(--panel-2);padding:26px 24px;display:flex;flex-direction:column}
+.card.lead{border-color:#3A3020}
+.card .tier{font-family:var(--mono);font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);margin-bottom:14px}
+.card .price{font-family:var(--mono);font-size:34px;font-weight:600;letter-spacing:-.04em;line-height:1;margin-bottom:6px}
+.card .price small{font-size:13px;font-weight:400;color:var(--dim);letter-spacing:0}
+.card .cap{font-family:var(--mono);font-size:12px;color:var(--med);margin-bottom:18px}
+.card ul{list-style:none;margin:0 0 24px;padding:0;font-size:13.5px;color:var(--dim);flex:1}
+.card li{padding:5px 0 5px 18px;position:relative}
+.card li:before{content:"";position:absolute;left:0;top:13px;width:6px;height:1px;background:var(--dimmer)}
+.pnote{font-family:var(--mono);font-size:12px;color:var(--dimmer);margin-top:20px}
+
+/* ---------- waitlist ---------- */
+.diff{border-top:1px solid var(--line);padding:64px 0 80px}
+.diff h2{font-family:var(--mono);font-size:clamp(20px,3.2vw,28px);font-weight:600;letter-spacing:-.03em;margin:0 0 14px;max-width:22ch}
+.diff p{color:var(--dim);max-width:56ch;margin:0 0 26px}
+.quote{border-left:2px solid var(--med);padding:12px 0 12px 18px;font-family:var(--mono);font-size:13px;color:var(--text);margin:0 0 30px;max-width:60ch}
+.signup{display:flex;gap:10px;flex-wrap:wrap;max-width:480px}
+.signup input{
+  flex:1;min-width:220px;background:var(--panel);border:1px solid var(--line);
+  border-radius:5px;padding:11px 14px;color:var(--text);font-family:var(--mono);font-size:13.5px;
+}
+.signup input::placeholder{color:var(--dimmer)}
+.signup input:focus{border-color:var(--med);outline:none}
+.note{font-family:var(--mono);font-size:12px;margin-top:12px;min-height:18px}
+.note.ok{color:var(--clear)}
+.note.no{color:var(--high)}
+
+footer{border-top:1px solid var(--line);padding:26px 0 44px;font-family:var(--mono);font-size:12px;color:var(--dimmer)}
+@media(prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important}
+  .reveal{opacity:1;transform:none}
+  .caret{visibility:visible}
+}
+</style>
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wrap">
+    <div class="brand">NULL<span>SCAN</span></div>
+    <nav>
+      <a href="#scan">Scan</a>
+      <a href="#how">How it reads your APK</a>
+      <a href="#track">Track builds</a>
+      <a href="#pricing">Pricing</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <div class="eyebrow">Play Data Safety · evidence-backed</div>
+    <h1>You signed a form saying what your app collects. <em>Do you know?</em></h1>
+    <p class="lede">Your app links SDKs you never chose — pulled in three levels deep by the ones you did. Drop an APK and see every one, what it reads, and the exact bytecode that proves it.</p>
+
+    <div class="resolve" id="resolve" aria-label="Example finding">
+      <div class="resolve-row">
+        <div class="rtag">Found</div>
+        <div class="rbody"><span class="sink" id="typed"></span><span class="caret" id="caret"></span></div>
+      </div>
+      <div class="resolve-row reveal" style="animation-delay:2.5s">
+        <div class="rtag">Means</div>
+        <div class="rbody"><span class="arrow">→</span> <span class="cat">Device or other IDs</span> · collected · <span class="cat">shared with third parties</span></div>
+      </div>
+      <div class="resolve-row reveal" style="animation-delay:3.1s">
+        <div class="rtag">Your form</div>
+        <div class="rbody"><span class="bad">says this app does not collect device IDs</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="scanner" id="scan">
+  <div class="wrap">
+    <div class="drop" id="drop">
+      <h2>Drop an APK</h2>
+      <p>Nothing to sign up for. Your file is analysed and deleted.</p>
+      <input type="file" id="file" accept=".apk,.aab" hidden>
+      <button class="btn" id="pick">Choose an APK</button>
+      <div class="fineprint" id="limits">Up to 512 MB · 3 scans per day</div>
+
+      <div class="progress" id="prog">
+        <div class="bar"><i id="fill"></i></div>
+        <div class="stage" id="s1"><b>·</b><span>Uploading</span></div>
+        <div class="stage" id="s2"><b>·</b><span>Reading AndroidManifest.xml</span></div>
+        <div class="stage" id="s3"><b>·</b><span>Walking bytecode for SDKs and API calls</span></div>
+        <div class="stage" id="s4"><b>·</b><span>Building the declaration</span></div>
+      </div>
+      <div class="err" id="err"></div>
+    </div>
+
+    <div class="report" id="report"></div>
+  </div>
+</section>
+
+<section class="pipe" id="how">
+  <div class="wrap">
+    <div class="pipe-grid">
+      <div class="step">
+        <div class="n">STAGE 01</div>
+        <h4>Manifest</h4>
+        <p>Decodes the binary AndroidManifest.xml directly — no aapt, no rebuild. Permissions, exported components, cleartext policy, target API.</p>
+      </div>
+      <div class="step">
+        <div class="n">STAGE 02</div>
+        <h4>Bytecode</h4>
+        <p>Walks every classes.dex for SDK fingerprints and privacy-relevant API calls. Records the exact method reference behind each finding.</p>
+      </div>
+      <div class="step">
+        <div class="n">STAGE 03</div>
+        <h4>Declaration</h4>
+        <p>Merges permissions, linked SDKs and API calls into one row per data category, each carrying the evidence that produced it.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<section class="plans" id="pricing">
+  <div class="wrap">
+    <h2>Pricing</h2>
+    <p class="sub">Scanning is free. You pay when you want the machine watching every build instead of only the one you remembered to check.</p>
+    <div class="cards" id="cards"></div>
+    <div class="pnote">Cancel any time from the billing portal. Re-scanning an unchanged build never counts against your total.</div>
+    <div class="note" id="pnote" role="status"></div>
+  </div>
+</section>
+
+<section class="diff" id="track">
+  <div class="wrap">
+    <h2>A scan tells you today. A diff tells you the day it breaks.</h2>
+    <div class="quote">Build 47 added an SDK that reads coarse location.<br>Your live Data Safety form says you don't collect location.</div>
+    <p>Wire NULLSCAN into CI and every build gets compared against the last one you shipped. New SDK, new permission, new data category — you hear about it before review does. Early access is opening soon.</p>
+    <div class="signup">
+      <input type="email" id="email" placeholder="you@studio.dev" autocomplete="email" aria-label="Email address">
+      <button class="btn ghost" id="join">Get early access</button>
+    </div>
+    <div class="note" id="note" role="status"></div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">NULLSCAN · uploads are deleted after analysis · not legal advice</div>
+</footer>
+
+<script>
+(function(){
+  'use strict';
+  var API = '';
+  var $ = function(id){ return document.getElementById(id); };
+
+  /* hero: type the finding, then let the resolution rows rise */
+  var SINK = 'Landroid/telephony/TelephonyManager;->getDeviceId';
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (reduce) {
+    $('typed').textContent = SINK;
+    $('caret').style.display = 'none';
+  } else {
+    var i = 0;
+    (function type(){
+      $('typed').textContent = SINK.slice(0, i++);
+      if (i <= SINK.length) setTimeout(type, 28);
+      else setTimeout(function(){ $('caret').style.display='none'; }, 1400);
+    })();
+  }
+
+  /* ---- scan flow: upload -> 202 -> poll ---- */
+  var drop = $('drop'), file = $('file'), pick = $('pick');
+  var prog = $('prog'), fill = $('fill'), err = $('err'), report = $('report');
+  var busy = false;
+
+  pick.addEventListener('click', function(){ file.click(); });
+  file.addEventListener('change', function(){ if (file.files[0]) start(file.files[0]); });
+
+  ['dragenter','dragover'].forEach(function(e){
+    drop.addEventListener(e, function(ev){ ev.preventDefault(); drop.classList.add('over'); });
+  });
+  ['dragleave','drop'].forEach(function(e){
+    drop.addEventListener(e, function(ev){ ev.preventDefault(); drop.classList.remove('over'); });
+  });
+  drop.addEventListener('drop', function(ev){
+    var f = ev.dataTransfer && ev.dataTransfer.files[0];
+    if (f) start(f);
+  });
+
+  function stage(n, on){ $('s'+n).classList.toggle('done', !!on); }
+  function fail(msg){
+    err.textContent = msg;
+    err.classList.add('on');
+    prog.classList.remove('on');
+    pick.disabled = false;
+    busy = false;
+  }
+
+  function start(f){
+    if (busy) return;
+    if (!/\.(apk|aab)$/i.test(f.name)) { fail('That is not an APK. Choose a .apk or .aab file.'); return; }
+    busy = true;
+    err.classList.remove('on');
+    report.classList.remove('on');
+    report.innerHTML = '';
+    prog.classList.add('on');
+    pick.disabled = true;
+    [1,2,3,4].forEach(function(n){ stage(n,false); });
+    fill.style.width = '4%';
+
+    var fd = new FormData();
+    fd.append('file', f);
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', API + '/v1/scans');
+    xhr.upload.onprogress = function(e){
+      if (!e.lengthComputable) return;
+      fill.style.width = (6 + (e.loaded / e.total) * 34) + '%';
+    };
+    xhr.onload = function(){
+      var body;
+      try { body = JSON.parse(xhr.responseText); } catch (_) { body = {}; }
+      if (xhr.status === 429) { fail(body.error || 'Daily scan limit reached. Try again tomorrow.'); return; }
+      if (xhr.status === 413) { fail(body.error || 'That file is over the size limit.'); return; }
+      if (xhr.status >= 400)  { fail(body.error || 'Upload failed. Try again.'); return; }
+      stage(1,true); fill.style.width = '46%';
+      poll(body.job_id, 0);
+    };
+    xhr.onerror = function(){ fail('Connection lost during upload.'); };
+    xhr.send(fd);
+  }
+
+  function poll(id, n){
+    if (n > 400) { fail('Scan timed out. Large apps can exceed the free-tier limit.'); return; }
+    fetch(API + '/v1/scans/' + id).then(function(r){ return r.json(); }).then(function(job){
+      if (job.state === 'done') {
+        stage(2,true); stage(3,true); stage(4,true);
+        fill.style.width = '100%';
+        setTimeout(function(){ prog.classList.remove('on'); render(job.report); }, 320);
+        pick.disabled = false; busy = false;
+        return;
+      }
+      if (job.state === 'failed' || job.state === 'timeout') {
+        fail(job.error || 'The scan did not finish.');
+        return;
+      }
+      if (n > 2)  stage(2,true);
+      if (n > 8)  stage(3,true);
+      fill.style.width = Math.min(46 + n * 2.2, 92) + '%';
+      setTimeout(function(){ poll(id, n + 1); }, 900);
+    }).catch(function(){ fail('Lost contact with the scanner.'); });
+  }
+
+  /* ---- render ---- */
+  function esc(s){
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  function label(c){
+    return esc(String(c).replace(/[._]/g, ' ').replace(/\b\w/g, function(m){ return m.toUpperCase(); }));
+  }
+
+  function render(rep){
+    if (!rep) { fail('No report came back.'); return; }
+    var m = rep.manifest, h = [];
+
+    h.push('<div class="rhead">');
+    h.push('<div class="pkg">' + esc(m ? m.package : 'unknown package') + '</div>');
+    if (m) h.push('<div class="meta">v' + esc(m.version_name) + ' (' + esc(m.version_code) + ') · targetSdk ' + esc(m.target_sdk) + ' · ' + m.permissions.length + ' permissions</div>');
+    h.push('</div>');
+
+    if (rep.errors && rep.errors.length) {
+      h.push('<div class="sec"><h3>Could not read</h3><div class="mono" style="color:var(--high)">' + esc(rep.errors.join(' · ')) + '</div></div>');
+    }
+
+    var d = rep.declaration || [];
+    h.push('<div class="sec"><h3>Data Safety declaration — ' + d.length + ' categor' + (d.length === 1 ? 'y' : 'ies') + '</h3>');
+    if (!d.length) {
+      h.push('<div class="mono" style="color:var(--clear)">Nothing detected. This app links no data-collecting SDKs we recognise.</div>');
+    } else {
+      h.push('<div class="scroller"><table><thead><tr><th>Category</th><th>Shared</th><th>Required</th><th>Why</th></tr></thead><tbody>');
+      d.forEach(function(r){
+        h.push('<tr><td><strong>' + label(r.category) + '</strong></td>' +
+               '<td><span class="pill ' + (r.shared ? 'p-med' : 'p-info') + '">' + (r.shared ? 'third parties' : 'internal') + '</span></td>' +
+               '<td><span class="pill ' + (r.required ? 'p-yes' : 'p-info') + '">' + (r.required ? 'yes' : 'optional') + '</span></td>' +
+               '<td class="mono" style="color:var(--dim)">' + esc(r.justification[0] || '') + '</td></tr>');
+      });
+      h.push('</tbody></table></div>');
+    }
+    h.push('</div>');
+
+    var s = rep.sdks || [];
+    if (s.length) {
+      h.push('<div class="sec"><h3>Third-party SDKs — ' + s.length + '</h3><div class="scroller"><table><thead><tr><th>SDK</th><th>Vendor</th><th>Reads</th></tr></thead><tbody>');
+      s.forEach(function(x){
+        h.push('<tr><td><strong>' + esc(x.name) + '</strong>' + (x.shares_with_third_party ? ' <span class="pill p-med">shares</span>' : '') + '</td>' +
+               '<td class="mono" style="color:var(--dim)">' + esc(x.vendor) + '</td>' +
+               '<td class="mono" style="color:var(--dim)">' + (x.collects.length ? x.collects.map(label).join(', ') : 'no user data') + '</td></tr>');
+      });
+      h.push('</tbody></table></div></div>');
+    }
+
+    var f = rep.findings || [];
+    if (f.length) {
+      h.push('<div class="sec"><h3>Findings — ' + f.length + '</h3><div class="scroller"><table><tbody>');
+      f.forEach(function(x){
+        h.push('<tr><td style="width:78px"><span class="pill p-' + esc(x.severity) + '">' + esc(x.severity) + '</span></td><td>' + esc(x.title));
+        if (x.evidence && x.evidence[0]) h.push('<span class="ev">' + esc(x.evidence[0].detail) + '</span>');
+        if (x.remediation) h.push('<span class="fix">' + esc(x.remediation) + '</span>');
+        h.push('</td></tr>');
+      });
+      h.push('</tbody></table></div></div>');
+    }
+
+    report.innerHTML = h.join('');
+    report.classList.add('on');
+    report.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+  }
+
+
+  /* ---- pricing ---- */
+  var FEATURES = {
+    indie: ['Every scan the free tier gives you, without the daily cap',
+            'Build-over-build compliance diffs',
+            'CI exit code when your declaration would go stale',
+            'Full evidence trail on every finding'],
+    studio: ['Everything in Indie',
+             'Enough headroom for a shop shipping client apps',
+             'Priority scanning queue',
+             'Shared key across your CI runners']
+  };
+  fetch(API + '/v1/plans').then(function(r){ return r.json(); }).then(function(plans){
+    var host = $('cards');
+    host.innerHTML = plans.map(function(p, i){
+      var feats = (FEATURES[p.slug] || []).map(function(f){ return '<li>' + f + '</li>'; }).join('');
+      return '<div class="card' + (i === 0 ? ' lead' : '') + '">' +
+        '<div class="tier">' + p.name + '</div>' +
+        '<div class="price">$' + Math.round(p.price_cents / 100) + '<small> /month</small></div>' +
+        '<div class="cap">' + p.monthly_scans.toLocaleString() + ' scans a month</div>' +
+        '<ul>' + feats + '</ul>' +
+        '<button class="btn' + (i === 0 ? '' : ' ghost') + '" data-tier="' + p.slug + '">Start ' + p.name + '</button>' +
+        '</div>';
+    }).join('');
+    Array.prototype.forEach.call(host.querySelectorAll('button[data-tier]'), function(b){
+      b.addEventListener('click', function(){ buy(b.getAttribute('data-tier'), b); });
+    });
+  }).catch(function(){
+    $('cards').innerHTML = '<div class="mono" style="color:var(--dim)">Pricing is unavailable right now.</div>';
+  });
+
+  function buy(tier, btn){
+    var pn = $('pnote');
+    btn.disabled = true;
+    pn.className = 'note';
+    pn.textContent = 'Opening checkout…';
+    fetch(API + '/v1/checkout', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier: tier })
+    }).then(function(r){ return r.json().then(function(b){ return { ok: r.ok, b: b }; }); })
+      .then(function(res){
+        btn.disabled = false;
+        if (res.ok && res.b.url) { window.location.href = res.b.url; return; }
+        pn.className = 'note no';
+        pn.textContent = res.b.error || 'Checkout is not available yet.';
+      }).catch(function(){
+        btn.disabled = false;
+        pn.className = 'note no';
+        pn.textContent = 'Could not reach the payment provider.';
+      });
+  }
+
+  /* returning from Stripe */
+  if (/[?&]checkout=success/.test(location.search)) {
+    var n = $('note');
+    n.className = 'note ok';
+    n.textContent = 'Payment received. Your API key is on its way to your email.';
+    location.hash = '#track';
+  }
+
+  /* ---- waitlist ---- */
+  var note = $('note');
+  $('join').addEventListener('click', function(){
+    var v = $('email').value.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) {
+      note.className = 'note no';
+      note.textContent = 'That address does not look right.';
+      return;
+    }
+    note.className = 'note';
+    note.textContent = 'Sending…';
+    fetch(API + '/v1/waitlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: v })
+    }).then(function(r){ return r.json().then(function(b){ return { ok: r.ok, b: b }; }); })
+      .then(function(res){
+        if (!res.ok) { note.className='note no'; note.textContent = res.b.error || 'Could not save that.'; return; }
+        note.className = 'note ok';
+        note.textContent = 'Saved. You will hear from us when build tracking opens.';
+        $('email').value = '';
+      }).catch(function(){
+        note.className = 'note no';
+        note.textContent = 'Network error. Try again.';
+      });
+  });
+})();
+</script>
+</body>
+</html>

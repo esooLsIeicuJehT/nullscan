@@ -1,0 +1,23 @@
+# Copy this into your Android repo.
+name: Compliance
+on:
+  pull_request:
+    paths: ['app/**', '**/build.gradle*', 'gradle/libs.versions.toml']
+
+jobs:
+  data-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+
+      - name: Build release APK
+        run: ./gradlew assembleRelease
+
+      - name: Check Data Safety drift
+        uses: ./ci
+        with:
+          apk: app/build/outputs/apk/release/app-release.apk
+          # Commit this file when you ship. It is the declaration Play believes.
+          baseline: compliance/baseline.json
