@@ -246,6 +246,28 @@ def main() -> int:
         r = client.post("/v1/checkout", json={"tier": "enterprise"})
         check("unknown plan rejected 400", r.status_code == 400, str(r.status_code))
 
+        # Stripe's Managed Payments (default-on for new accounts) 400s any line
+        # item whose product has no tax code. The failure is server-side only —
+        # the customer just sees checkout not open — so pin the parameter.
+        import service.billing as _b
+        _sent = {}
+        _real_post = _b._post
+        try:
+            _b._post = lambda path, key, params, **kw: (
+                _sent.update(params=dict(params)) or
+                {"url": "https://checkout.stripe.com/test", "id": "cs_test"})
+            _b.create_checkout_session(
+                secret_key="sk_test_x", tier=_b.TIERS["indie"],
+                success_url="https://x/?s", cancel_url="https://x/?c")
+        finally:
+            _b._post = _real_post
+        tc = _sent["params"].get("line_items[0][price_data][product_data][tax_code]")
+        check("checkout sends a product tax_code", bool(tc), str(tc))
+        check("tax_code is a SaaS code", str(tc).startswith("txcd_"), str(tc))
+        check("price matches the tier",
+              _sent["params"]["line_items[0][price_data][unit_amount]"]
+              == str(_b.TIERS["indie"].price_cents))
+
         # --- signature verification ---
         secret = "whsec_test_abc123"
         evt = {"id": "evt_1", "type": "checkout.session.completed",

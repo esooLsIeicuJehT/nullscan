@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import sqlite3
 import time
@@ -40,6 +41,19 @@ from pathlib import Path
 from typing import Any
 
 STRIPE_API = "https://api.stripe.com/v1"
+
+# Stripe's Managed Payments (default-on for new accounts) refuses any line item
+# whose product has no tax code — it needs one to work out VAT/GST/sales tax per
+# jurisdiction on your behalf. Without it, checkout fails with a 400 that never
+# reaches the customer, so this is not optional.
+#
+#   txcd_10103001  SaaS, business use     <- a developer tool sold to companies
+#   txcd_10103000  SaaS, personal use
+#   txcd_10000000  General electronically supplied services
+#
+# Override with NULLSCAN_TAX_CODE if your accountant disagrees; the eligible
+# list is at https://docs.stripe.com/tax/tax-codes
+DEFAULT_TAX_CODE = os.environ.get("NULLSCAN_TAX_CODE", "txcd_10103001")
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,7 +183,7 @@ def _post(path: str, secret_key: str, params: list[tuple[str, str]],
 
 def create_checkout_session(
     *, secret_key: str, tier: Tier, success_url: str, cancel_url: str,
-    email: str | None = None,
+    email: str | None = None, tax_code: str = "",
 ) -> dict[str, Any]:
     """Build a Checkout session with an inline price.
 
@@ -187,6 +201,7 @@ def create_checkout_session(
         ("line_items[0][price_data][unit_amount]", str(tier.price_cents)),
         ("line_items[0][price_data][product_data][name]", f"NULLSCAN {tier.name}"),
         ("line_items[0][price_data][product_data][description]", tier.blurb),
+        ("line_items[0][price_data][product_data][tax_code]", tax_code or DEFAULT_TAX_CODE),
         ("metadata[tier]", tier.slug),
         ("subscription_data[metadata][tier]", tier.slug),
         ("allow_promotion_codes", "true"),

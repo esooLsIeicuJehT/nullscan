@@ -3,7 +3,7 @@
 Android compliance scanner. Ingests an APK, emits a Play Data Safety declaration
 and a build-over-build compliance drift report.
 
-`50/50` engine tests, `73/73` service tests. No aapt2, no apktool, no subprocess —
+`48/48` engine tests, `32/32` service tests. No aapt2, no apktool, no subprocess —
 the analysis core is pure stdlib Python.
 
 ---
@@ -199,4 +199,3 @@ Nobody in this market sells that.
 `core/arsc.py` for resource resolution, then widen `SDK_SIGNATURES` from 36 to
 ~200 — that table is the moat, and it's content, not code. Seed it by scanning
 the top 500 free apps and clustering unmatched class prefixes by frequency.
-# nullscan
