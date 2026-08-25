@@ -296,6 +296,28 @@ def main() -> int:
         # --- provisioning ---
         res = apply_event(evt, bstore)
         check("paid checkout issues a key", res["action"] == "key_issued", str(res))
+        check("buyer email captured from customer_email",
+              res.get("email") == "buyer@studio.dev", str(res.get("email")))
+
+        # Stripe only fills customer_email when WE passed it in. When the buyer
+        # types it into Checkout it arrives in customer_details.email instead —
+        # reading the first field alone stored None, and the first symptom would
+        # have been a paying customer who never got a key.
+        typed = {"id": "evt_typed", "type": "checkout.session.completed",
+                 "data": {"object": {"metadata": {"tier": "indie"},
+                                     "subscription": "sub_typed", "customer": "cus_t",
+                                     "customer_details": {"email": "Typed@Buyer.DEV"}}}}
+        rt = apply_event(typed, bstore)
+        check("email read from customer_details and normalised",
+              rt.get("email") == "typed@buyer.dev", str(rt.get("email")))
+        check("emailed key not flagged as anomalous", rt.get("email_missing") is False)
+
+        anon = {"id": "evt_anon", "type": "checkout.session.completed",
+                "data": {"object": {"metadata": {"tier": "indie"},
+                                    "subscription": "sub_anon", "customer": "cus_a"}}}
+        ra = apply_event(anon, bstore)
+        check("undeliverable key flagged, not silently stored",
+              ra.get("email_missing") is True, str(ra))
         key = res["key"]
         check("key is prefixed and long", key.startswith("nsk_") and len(key) > 30, key)
         check("tier from metadata", res["tier"] == "studio", str(res))

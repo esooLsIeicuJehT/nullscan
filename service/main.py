@@ -450,8 +450,15 @@ async def stripe_webhook(request: Request) -> JSONResponse:
         # Wire this to email. Until then the log is the delivery mechanism —
         # said plainly so it is not mistaken for a finished feature.
         log.warning("PROVISIONED %s key for %s -> %s",
-                    result["tier"], event.get("data", {}).get("object", {})
-                    .get("customer_email", "unknown"), result["key"])
+                    result["tier"], result.get("email") or "NO-EMAIL", result["key"])
+        if result.get("email_missing"):
+            log.error(
+                "NO EMAIL on session %s. This key cannot be delivered and the "
+                "customer cannot be identified if they lose it. Recover it from "
+                "Stripe: customer %s",
+                (event.get("data") or {}).get("object", {}).get("id", "?"),
+                (event.get("data") or {}).get("object", {}).get("customer", "?"),
+            )
     return JSONResponse({"received": True, **{k: v for k, v in result.items()
                                               if k != "key"}})
 

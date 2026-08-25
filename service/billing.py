@@ -265,6 +265,25 @@ def sign_webhook(payload: bytes, secret: str, ts: int | None = None) -> str:
     return f"t={t},v1={mac.hexdigest()}"
 
 
+def _buyer_email(obj: dict[str, Any]) -> str | None:
+    """Dig the buyer's address out of a Checkout session.
+
+    Stripe only populates `customer_email` when YOU passed it when creating the
+    session. When the buyer types it into Checkout — which is the normal case —
+    it lands in `customer_details.email` instead. Reading only the first field
+    silently stores None, and the first sign of trouble is a paying customer
+    who never received a key.
+    """
+    for candidate in (
+        obj.get("customer_email"),
+        (obj.get("customer_details") or {}).get("email"),
+        (obj.get("customer_details") or {}).get("name"),  # last resort identifier
+    ):
+        if isinstance(candidate, str) and "@" in candidate:
+            return candidate.strip().lower()
+    return None
+
+
 def apply_event(event: dict[str, Any], store: BillingStore) -> dict[str, Any]:
     """Pure-ish reducer: Stripe event in, provisioning action out.
 
@@ -290,13 +309,18 @@ def apply_event(event: dict[str, Any], store: BillingStore) -> dict[str, Any]:
             existing = store.key_for_subscription(str(sub))
             if existing:
                 return {"action": "already_provisioned", "key": existing, "tier": tier}
+        email = _buyer_email(obj)
         key = store.issue(
-            tier=tier,
-            email=obj.get("customer_email") or (obj.get("customer_details") or {}).get("email"),
+            tier=tier, email=email,
             customer_id=obj.get("customer"),
             subscription_id=str(sub) if sub else None,
         )
-        return {"action": "key_issued", "key": key, "tier": tier}
+        # A key with no email is unusable in the ways that matter: you cannot
+        # deliver it, and you cannot answer "I lost my key". Surface it as a
+        # distinct action so it shows up as an anomaly rather than blending
+        # into the success path.
+        return {"action": "key_issued", "key": key, "tier": tier,
+                "email": email, "email_missing": email is None}
 
     if kind in ("customer.subscription.deleted",):
         n = store.set_status(subscription_id=str(obj.get("id")), status="canceled")
