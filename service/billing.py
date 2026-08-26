@@ -89,6 +89,14 @@ CREATE TABLE IF NOT EXISTS api_keys (
     last_delivery_error TEXT
 );
 -- Event lifecycle, not a boolean. See begin_event() for why.
+CREATE TABLE IF NOT EXISTS recovery_tokens (
+    token_hash TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    used_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_tokens_email ON recovery_tokens(email);
 CREATE TABLE IF NOT EXISTS stripe_events (
     event_id     TEXT PRIMARY KEY,
     kind         TEXT,
@@ -269,6 +277,51 @@ class BillingStore:
             row = c.execute("SELECT * FROM api_keys WHERE key_hash=?",
                             (hash_key(key),)).fetchone()
         return dict(row) if row else None
+
+    # --- recovery tokens -----------------------------------------------------
+    def create_recovery_token(self, email: str, ttl_s: int = 900) -> str | None:
+        """Create a short-lived, one-time recovery token.
+
+        The raw token is emailed and never stored. Possession of the inbox is
+        required before a key is rotated, preventing anyone who merely knows an
+        address from repeatedly revoking a customer's credential.
+        """
+        email = (email or "").strip().lower()
+        if self.active_key_for_email(email) is None:
+            return None
+        raw = "nsr_" + secrets.token_urlsafe(32)
+        now = time.time()
+        th = hash_key(raw)
+        with self._session() as c:
+            c.execute("DELETE FROM recovery_tokens WHERE email=? OR expires_at<?",
+                      (email, now))
+            c.execute("INSERT INTO recovery_tokens (token_hash,email,created_at,expires_at) VALUES (?,?,?,?)",
+                      (th, email, now, now + ttl_s))
+        return raw
+
+    def consume_recovery_token(self, token: str) -> tuple[str, str] | None:
+        """Atomically consume a recovery token and rotate the credential."""
+        now = time.time()
+        th = hash_key(token)
+        with self._session() as c:
+            c.execute("BEGIN IMMEDIATE")
+            try:
+                row = c.execute("SELECT email FROM recovery_tokens WHERE token_hash=? AND used_at IS NULL AND expires_at>?",
+                                (th, now)).fetchone()
+                if row is None:
+                    c.execute("ROLLBACK")
+                    return None
+                cur = c.execute("UPDATE recovery_tokens SET used_at=? WHERE token_hash=? AND used_at IS NULL",
+                                (now, th))
+                if cur.rowcount != 1:
+                    c.execute("ROLLBACK")
+                    return None
+                c.execute("COMMIT")
+                email = row["email"]
+            except Exception:
+                c.execute("ROLLBACK")
+                raise
+        return self.rotate_for_email(email)
 
     def rotate_for_email(self, email: str) -> tuple[str, str] | None:
         """Revoke the active key for an address and issue a replacement.

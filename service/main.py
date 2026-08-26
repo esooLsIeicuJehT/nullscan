@@ -78,7 +78,7 @@ from .schemas import (
     ErrorOut,
     JobOut,
     QuotaOut,
-    RecoverIn,
+    RecoverIn, RecoverConfirmIn, RecoverConfirmOut,
     RecoverOut,
     SubmitAccepted,
     TierOut,
@@ -511,11 +511,11 @@ async def stripe_webhook(request: Request) -> JSONResponse:
                                   "sent" if delivered else "failed",
                                   "" if delivered else "mailer rejected the send")
             if not delivered:
-                # No raw key in the log. The startup sweep retries it, and if
-                # mail is genuinely broken the fingerprint identifies the row
-                # without exposing the credential.
-                log.error("KEY NOT DELIVERED key_fp=%s to=%s — queued for retry",
-                          result.get("key_fp"), result["email"])
+                # The raw credential was intentionally discarded after this
+                # attempt, so it cannot be re-sent. Recovery later issues a new
+                # key after the customer proves control of the mailbox.
+                log.error("KEY NOT DELIVERED key_fp=%s; recovery required",
+                          result.get("key_fp"))
         if result.get("email_missing"):
             log.error(
                 "NO EMAIL on session %s. This key cannot be delivered and the "
@@ -550,22 +550,33 @@ async def recover_key(request: Request, payload: RecoverIn) -> RecoverOut:
         return generic
     public.charge(bucket)
 
-    rotated = billing.rotate_for_email(payload.email)
-    if rotated is None:
+    token = billing.create_recovery_token(payload.email)
+    if token is None:
         return generic
-    new_key, tier_slug = rotated
-
-    tier = TIERS.get(tier_slug)
+    recovery_url = settings.public_url.rstrip("/") + "/v1/keys/recover/confirm?token=" + token
     subject, body = mailer.key_recovery(
-        key=new_key, tier_name=tier.name if tier else tier_slug,
-        base_url=settings.public_url.rstrip("/"),
+        recovery_url=recovery_url, base_url=settings.public_url.rstrip("/"),
     )
-    await asyncio.to_thread(
+    delivered = await asyncio.to_thread(
         mailer.send, api_key=settings.resend_api_key, sender=settings.mail_from,
         to=payload.email.strip().lower(), subject=subject, text=body,
     )
-    log.info("ROTATED key for a recovery request (email withheld from logs)")
+    if not delivered:
+        log.error("RECOVERY LINK NOT DELIVERED (email withheld from logs)")
+    else:
+        log.info("RECOVERY LINK ISSUED (email withheld from logs)")
     return generic
+
+
+@app.post("/v1/keys/recover/confirm", response_model=RecoverConfirmOut)
+async def confirm_recovery(payload: RecoverConfirmIn) -> RecoverConfirmOut:
+    rotated = billing.consume_recovery_token(payload.token)
+    if rotated is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Recovery link is invalid, expired, or already used.")
+    new_key, tier_slug = rotated
+    log.info("RECOVERY TOKEN CONSUMED; credential rotated")
+    return RecoverConfirmOut(key=new_key, tier=tier_slug)
 
 
 @app.get("/v1/account", response_model=AccountOut, summary="Your plan and usage")

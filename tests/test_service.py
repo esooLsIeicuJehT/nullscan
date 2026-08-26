@@ -408,10 +408,10 @@ def main() -> int:
             check("recover returns 200", r.status_code == 200, r.text)
             check("recover sent the mail", any(k["to"] == "mailme@studio.dev" for k in sent),
                   str([k.get("to") for k in sent]))
-            check("recovered mail carries a key",
-                  any("nsk_" in k.get("text", "") for k in sent))
-            check("recovery does NOT resend the original (it is not stored)",
-                  not any(key2 in k.get("text", "") for k in sent))
+            check("recovery mail carries a one-time confirmation link",
+                  any("/v1/keys/recover/confirm?token=nsr_" in k.get("text", "") for k in sent))
+            check("recovery does NOT expose a replacement key in email",
+                  not any("nsk_" in k.get("text", "") for k in sent))
 
             before = len(sent)
             r2 = client.post("/v1/keys/recover", json={"email": "nobody@nowhere.dev"})
@@ -430,10 +430,20 @@ def main() -> int:
                   len(sent) - before <= cfg.recover_per_day,
                   f"{len(sent) - before} emails sent")
 
-            # Every recovery rotates, so the live key is the one in the LAST
-            # email sent — capture it after the rate-limit loop, not before.
-            key2 = [ln.strip() for k in sent for ln in k.get("text", "").splitlines()
-                    if ln.strip().startswith("nsk_")][-1]
+            # Recovery links do not rotate a credential until the inbox holder
+            # explicitly confirms one. Extract the newest token and consume it.
+            import re as _re
+            tokens = _re.findall(r"token=(nsr_[A-Za-z0-9_-]+)",
+                                 "\n".join(k.get("text", "") for k in sent))
+            check("recovery token was delivered", bool(tokens))
+            old_key = key2
+            rc = client.post("/v1/keys/recover/confirm", json={"token": tokens[-1]})
+            check("recovery confirmation returns 200", rc.status_code == 200, rc.text)
+            key2 = rc.json().get("key", "") if rc.status_code == 200 else ""
+            check("confirmed recovery returns a replacement key", key2.startswith("nsk_"))
+            check("confirmed recovery does not reuse old key", key2 != old_key)
+            check("recovery token is single-use",
+                  client.post("/v1/keys/recover/confirm", json={"token": tokens[-1]}).status_code == 400)
 
             # --- account ---
             r = client.get("/v1/account", headers={"X-API-Key": key2})
@@ -523,17 +533,26 @@ def main() -> int:
         sent = sent2
         r = client.post("/v1/keys/recover", json={"email": "rot@studio.dev"})
         check("recovery still returns the generic reply", r.status_code == 200)
-        check("a replacement key was mailed", len(sent) == 1, str(len(sent)))
+        check("a recovery link was mailed", len(sent) == 1, str(len(sent)))
         body_sent = sent[-1]["text"]
-        check("the email states the old key is dead",
-              "stopped working" in body_sent, body_sent[:120])
-        new_key = [ln.strip() for ln in body_sent.splitlines()
-                   if ln.strip().startswith("nsk_")][0]
+        check("the email does not expose the old key", original not in body_sent)
+        import re as _re2
+        token_match = _re2.search(r"token=(nsr_[A-Za-z0-9_-]+)", body_sent)
+        check("the email contains a one-time token", token_match is not None)
+        check("the original remains valid before confirmation",
+              client.get("/v1/account", headers={"X-API-Key": original}).status_code == 200)
+        new_key = ""
+        if token_match:
+            confirmed = client.post("/v1/keys/recover/confirm",
+                                    json={"token": token_match.group(1)})
+            check("confirmation returns a replacement", confirmed.status_code == 200, confirmed.text)
+            if confirmed.status_code == 200:
+                new_key = confirmed.json()["key"]
         check("the replacement is a different key", new_key != original)
         check("the replacement authenticates",
               client.get("/v1/account", headers={"X-API-Key": new_key}).status_code == 200)
         old_status = client.get("/v1/account", headers={"X-API-Key": original}).status_code
-        check("the old key stops working immediately", old_status == 401, str(old_status))
+        check("the old key stops working after confirmation", old_status == 401, str(old_status))
         check("and says so clearly rather than blaming billing",
               "replaced" in client.get("/v1/account",
                                        headers={"X-API-Key": original}).text)
