@@ -133,6 +133,24 @@ class DeclarationLine:
 
 
 @dataclass(frozen=True, slots=True)
+class SignerOut:
+    sha256: str
+    subject_cn: str
+    organization: str
+    is_debug: bool
+    der_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
+class SigningOut:
+    schemes: tuple[str, ...]
+    signers: tuple[SignerOut, ...]
+    v1_only: bool
+    unsigned: bool
+    note: str = ""
+
+
+@dataclass(frozen=True, slots=True)
 class ScanReport:
     schema_version: str
     apk_sha256: str
@@ -144,6 +162,7 @@ class ScanReport:
     findings: tuple[Finding, ...]
     native: tuple[NativeSurface, ...]
     declaration: tuple[DeclarationLine, ...]
+    signing: SigningOut | None = None
     errors: tuple[str, ...] = field(default_factory=tuple)
 
     def to_dict(self) -> dict[str, Any]:

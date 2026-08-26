@@ -254,7 +254,40 @@ def _c_new_finding_at_least(val: Any, report: dict, drift: dict | None) -> tuple
     return bool(hits), hits
 
 
+def _c_signed_with_debug(val: Any, report: dict, drift: dict | None) -> tuple[bool, list[str]]:
+    sg = report.get("signing") or {}
+    hits = [s.get("subject_cn") or s["sha256"][:16]
+            for s in sg.get("signers") or [] if s.get("is_debug")]
+    return (bool(hits) if val else False), hits
+
+
+def _c_unsigned(val: Any, report: dict, drift: dict | None) -> tuple[bool, list[str]]:
+    sg = report.get("signing") or {}
+    hit = bool(sg.get("unsigned")) and bool(val)
+    return hit, ["no signature present"] if hit else []
+
+
+def _c_signer_not_in(val: Any, report: dict, drift: dict | None) -> tuple[bool, list[str]]:
+    """Pin the publisher. Matches when ANY signer is outside the approved set."""
+    allowed = {str(v).lower() for v in (val if isinstance(val, list) else [val])}
+    sg = report.get("signing") or {}
+    hits = [s["sha256"] for s in sg.get("signers") or []
+            if s["sha256"].lower() not in allowed]
+    return bool(hits), hits
+
+
+def _c_signer_changed(val: Any, report: dict, drift: dict | None) -> tuple[bool, list[str]]:
+    d = _need_drift(drift, "signer_changed")
+    hit = bool(d.get("signer_changed")) and bool(val)
+    return hit, [f"{', '.join(d.get('signers_before', []))[:24]}… -> "
+                 f"{', '.join(d.get('signers_after', []))[:24]}…"] if hit else []
+
+
 CONDITIONS = {
+    "signed_with_debug_certificate": _c_signed_with_debug,
+    "unsigned": _c_unsigned,
+    "signer_not_in": _c_signer_not_in,
+    "signer_changed": _c_signer_changed,
     "finding": _c_finding,
     "finding_severity_at_least": _c_severity_at_least,
     "sdk": _c_sdk,
@@ -282,7 +315,7 @@ class Policy:
 
     # --- loading -------------------------------------------------------------
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Policy":
+    def from_dict(cls, data: dict[str, Any]) -> Policy:
         name = str((data.get("meta") or {}).get("name") or "unnamed policy")
         raw_rules = data.get("rule") or data.get("rules") or []
         if not isinstance(raw_rules, list) or not raw_rules:
@@ -328,7 +361,7 @@ class Policy:
         return cls(name=name, rules=rules)
 
     @classmethod
-    def load(cls, path: str) -> "Policy":
+    def load(cls, path: str) -> Policy:
         with open(path, "rb") as fh:
             raw = fh.read()
         try:
@@ -488,6 +521,18 @@ when = { target_sdk_below = 34 }
 id = "new-permissions-need-review"
 action = "warn"
 when = { new_permission = true }
+
+[[rule]]
+id = "no-debug-certificate"
+description = "The debug key ships with every Android SDK — anyone can re-sign this."
+action = "block"
+when = { signed_with_debug_certificate = true }
+
+[[rule]]
+id = "publisher-must-not-change"
+description = "The signing certificate changed between builds. Verify this was intentional."
+action = "block"
+when = { signer_changed = true }
 
 [[rule]]
 id = "secrets-in-the-apk"

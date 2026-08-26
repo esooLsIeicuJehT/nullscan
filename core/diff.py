@@ -30,6 +30,10 @@ class ComplianceDrift:
     removed_permissions: list[str] = field(default_factory=list)
     new_categories: list[str] = field(default_factory=list)
     removed_categories: list[str] = field(default_factory=list)
+    signer_changed: bool = False
+    signers_before: list[str] = field(default_factory=list)
+    signers_after: list[str] = field(default_factory=list)
+    schemes_removed: list[str] = field(default_factory=list)
     declaration_changed: bool = False
     blocking: bool = False
     summary: str = ""
@@ -79,16 +83,36 @@ def diff_reports(base: dict[str, Any], head: dict[str, Any]) -> ComplianceDrift:
         removed_categories=sorted(b_cat - h_cat),
     )
 
+    # Signer identity across builds. This is the supply-chain question: an APK
+    # can be perfectly compliant and signed by the wrong key. If a CI system is
+    # compromised, the certificate changing is often the only visible symptom,
+    # and nothing else in this report would notice.
+    b_sig = (base.get("signing") or {})
+    h_sig = (head.get("signing") or {})
+    drift.signers_before = [s["sha256"] for s in b_sig.get("signers") or []]
+    drift.signers_after = [s["sha256"] for s in h_sig.get("signers") or []]
+    drift.signer_changed = bool(
+        drift.signers_before and drift.signers_after
+        and set(drift.signers_before) != set(drift.signers_after)
+    )
+    drift.schemes_removed = sorted(
+        set(b_sig.get("schemes") or []) - set(h_sig.get("schemes") or []))
+
     drift.declaration_changed = bool(drift.new_categories or drift.removed_categories)
 
     # "Blocking" == this build would make a previously-accurate Data Safety form
     # wrong, or introduces a HIGH finding. That's the CI exit-code-1 condition.
     drift.blocking = bool(
         drift.new_categories
+        or drift.signer_changed
         or any(f["severity"] == "high" for f in drift.new_findings)
     )
 
     bits: list[str] = []
+    if drift.signer_changed:
+        bits.append("SIGNING CERTIFICATE CHANGED — verify this was intentional")
+    if drift.schemes_removed:
+        bits.append(f"signature scheme(s) removed: {', '.join(drift.schemes_removed)}")
     if drift.new_categories:
         bits.append(
             f"declaration must be updated: +{', '.join(drift.new_categories)}"

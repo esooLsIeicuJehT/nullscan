@@ -11,10 +11,16 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core import Policy, PolicyError, analyze_path, diff_reports
-from core.policy import DEFAULT_POLICY_TOML
 from core.axml import parse_axml
 from core.dex import parse_dex
-from tests.fixtures import AxmlBuilder, build_apk, build_dex
+from core.policy import DEFAULT_POLICY_TOML
+from tests.fixtures import (
+    AxmlBuilder,
+    build_apk,
+    build_dex,
+    fake_der_cert,
+    sign_apk,
+)
 
 PASS = FAIL = 0
 
@@ -216,17 +222,106 @@ def main() -> int:
           str(brep2["errors"]))
     check("good dex still analysed", len(brep2["sdks"]) >= 4, str(len(brep2["sdks"])))
 
-    print("\n\033[1m[8] Policy engine\033[0m")
+    print("\n\033[1m[8] Signing and SBOM\033[0m")
+    import hashlib as _hl
+    import json as _js
+    import shutil as _sh
+    import zipfile as _zf
+
+    from core.sbom import build_sbom
+
+    check("unsigned APK detected", rep["signing"]["unsigned"] is True,
+          str(rep["signing"]))
+
+    dbg = os.path.join(tmp, "signed_debug.apk")
+    _sh.copy(apk, dbg)
+    cert = fake_der_cert("Android Debug", "Android")
+    sign_apk(dbg, [cert], scheme_ids=(0x7109871A, 0xF05368C0))
+    check("splicing the block leaves a valid zip",
+          _zf.ZipFile(dbg).testzip() is None)
+
+    srep = analyze_path(dbg)
+    sg = srep["signing"]
+    check("v2 and v3 schemes read", sg["schemes"] == ["v2", "v3"], str(sg["schemes"]))
+    check("one signer extracted", len(sg["signers"]) == 1, str(len(sg["signers"])))
+    check("certificate fingerprint is the DER sha256",
+          sg["signers"][0]["sha256"] == _hl.sha256(cert).hexdigest())
+    check("subject CN parsed", sg["signers"][0]["subject_cn"] == "Android Debug",
+          sg["signers"][0]["subject_cn"])
+    check("debug certificate flagged", sg["signers"][0]["is_debug"] is True)
+    check("debug key raises a HIGH finding",
+          any(f["id"] == "signing.debug_certificate" and f["severity"] == "high"
+              for f in srep["findings"]))
+    check("signing errors do not break the scan", not srep["errors"], str(srep["errors"]))
+
+    prod = os.path.join(tmp, "signed_prod.apk")
+    _sh.copy(apk, prod)
+    sign_apk(prod, [fake_der_cert("GhostDroid Release", "GhostDroid")])
+    prep2 = analyze_path(prod)
+    check("non-debug certificate not flagged",
+          prep2["signing"]["signers"][0]["is_debug"] is False)
+    check("release build raises no debug finding",
+          not any(f["id"] == "signing.debug_certificate" for f in prep2["findings"]))
+
+    # the supply-chain signal
+    sdrift = diff_reports(prep2, srep).to_dict()
+    check("signer change detected across builds", sdrift["signer_changed"] is True,
+          str(sdrift["summary"]))
+    check("signer change is blocking", sdrift["blocking"] is True)
+    check("self-diff reports no signer change",
+          diff_reports(prep2, prep2).to_dict()["signer_changed"] is False)
+
+    # sbom
+    bom = build_sbom(srep)
+    check("CycloneDX 1.5 envelope",
+          bom["bomFormat"] == "CycloneDX" and bom["specVersion"] == "1.5")
+    check("sbom is JSON-serialisable", isinstance(_js.dumps(bom), str))
+    check("every SDK becomes a component",
+          len(bom["components"]) >= len(srep["sdks"]), str(len(bom["components"])))
+    props = {p["name"] for c in bom["components"] for p in c["properties"]}
+    check("components carry evidence and confidence",
+          "nullscan:evidence" in props and "nullscan:confidence" in props, str(props))
+    check("purls are generic, not maven (we never established a version)",
+          all(c["purl"].startswith("pkg:generic/") for c in bom["components"]))
+    mprops = {p["name"]: p["value"] for p in bom["metadata"]["component"]["properties"]}
+    check("signer fingerprint carried into the sbom",
+          mprops.get("nullscan:signer_0_sha256") == sg["signers"][0]["sha256"])
+
+    # signing policy conditions
+    sp = Policy.from_dict({"meta": {}, "rule": [
+        {"id": "no-debug", "action": "block",
+         "when": {"signed_with_debug_certificate": True}}]})
+    check("policy blocks a debug-signed build",
+          sp.evaluate(srep).to_dict()["blocked"] is True)
+    check("policy passes a release-signed build",
+          sp.evaluate(prep2).to_dict()["blocked"] is False)
+    pin = Policy.from_dict({"meta": {}, "rule": [
+        {"id": "pin", "action": "block",
+         "when": {"signer_not_in": [prep2["signing"]["signers"][0]["sha256"]]}}]})
+    check("publisher pinning accepts the approved signer",
+          pin.evaluate(prep2).to_dict()["blocked"] is False)
+    check("publisher pinning rejects an unknown signer",
+          pin.evaluate(srep).to_dict()["blocked"] is True)
+
+    print("\n\033[1m[9] Policy engine\033[0m")
     import tomllib as _toml
 
     pol = Policy.from_dict(_toml.loads(DEFAULT_POLICY_TOML))
-    check("shipped default policy parses", len(pol.rules) == 8, str(len(pol.rules)))
+    check("shipped default policy parses", len(pol.rules) >= 8, str(len(pol.rules)))
+    check("default policy has no waiver without an expiry",
+          all(r.expires for r in pol.rules if r.action == "ignore"))
+    check("default policy blocks debug certificates",
+          any(r.id == "no-debug-certificate" for r in pol.rules))
 
     # The shipped policy contains drift rules. A first scan has no baseline, so
     # if those raised instead of skipping, the default config would fail on the
     # very first run a customer ever does.
     d0 = pol.evaluate(rep).to_dict()
-    check("drift rules skip without a baseline", len(d0["skipped"]) == 3, str(d0["skipped"]))
+    drift_rules = sum(1 for r in pol.rules
+                      if r.action != "ignore"
+                      and any(k.startswith(("new_", "signer_changed")) for k in r.when))
+    check("every drift rule skips without a baseline",
+          len(d0["skipped"]) == drift_rules, f"{len(d0['skipped'])} vs {drift_rules}")
     check("non-drift rules still enforce",
           any(r["matched"] for r in d0["results"]), str(d0["summary"]))
     check("debuggable build is blocked",
@@ -307,7 +402,7 @@ def main() -> int:
     check("all conditions must hold (AND, not OR)",
           anded.evaluate(rep).to_dict()["blocked"] is False)
 
-    print("\n\033[1m[9] Ambiguous-namespace false positives\033[0m")
+    print("\n\033[1m[10] Ambiguous-namespace false positives\033[0m")
     # com/facebook/common and com/facebook/bolts are shared between Meta's
     # tracking SDK, Fresco (image loading) and standalone Bolts-Android. A
     # corpus run tempted me into matching them; that would declare "shares data
@@ -335,7 +430,7 @@ def main() -> int:
     check("Fresco-only app declares nothing",
           not frep["declaration"], str(frep["declaration"]))
 
-    print("\n\033[1m[10] Architecture boundary\033[0m")
+    print("\n\033[1m[11] Architecture boundary\033[0m")
     import subprocess
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     r = subprocess.run(

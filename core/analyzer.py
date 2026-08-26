@@ -27,7 +27,7 @@ from __future__ import annotations
 import datetime as _dt
 from typing import Any
 
-from . import axml, container, dex, signatures
+from . import axml, container, dex, signatures, signing
 from .datasafety import build_declaration
 from .models import (
     Component,
@@ -39,6 +39,8 @@ from .models import (
     NativeSurface,
     ScanReport,
     Severity,
+    SignerOut,
+    SigningOut,
 )
 
 ENGINE_VERSION = "0.3.0"
@@ -169,6 +171,38 @@ def _manifest_findings(facts: ManifestFacts) -> list[Finding]:
     return out
 
 
+def _signing_findings(f: SigningOut) -> list[Finding]:
+    out: list[Finding] = []
+    if f.unsigned:
+        out.append(Finding(
+            "signing.unsigned", "APK carries no signature at all",
+            Severity.HIGH, Confidence.CERTAIN, (),
+            (Evidence("signing", "APK", "no v1/v2/v3 signature"),),
+            "Play will reject this. Sign the release before uploading.",
+        ))
+    for s in f.signers:
+        if s.is_debug:
+            out.append(Finding(
+                "signing.debug_certificate",
+                "Signed with the Android debug certificate",
+                Severity.HIGH, Confidence.CERTAIN, (),
+                (Evidence("signing", "certificate", f"CN={s.subject_cn or 'Android Debug'}"),),
+                "The debug key ships with every Android SDK, so anyone can "
+                "re-sign this APK. Play rejects it and sideloaded users have "
+                "no publisher guarantee.",
+            ))
+            break
+    if f.v1_only and not f.unsigned:
+        out.append(Finding(
+            "signing.v1_only", "Only the legacy v1 (JAR) signature scheme is present",
+            Severity.MEDIUM, Confidence.CERTAIN, (),
+            (Evidence("signing", "APK", "v1 only"),),
+            "v1 alone is vulnerable to the Janus class of attacks and is "
+            "rejected for new uploads on modern target APIs. Enable v2/v3.",
+        ))
+    return out
+
+
 def analyze_path(path: str, *, deep_strings: bool = True) -> dict[str, Any]:
     """Analyse an APK at `path`. Returns a plain dict (picklable across processes)."""
     errors: list[str] = []
@@ -221,6 +255,24 @@ def analyze_path(path: str, *, deep_strings: bool = True) -> dict[str, Any]:
                         seen_finding_ids.add(f.id)
                         findings.append(f)
 
+        # --- signing stage ----------------------------------------------------
+        sign_facts: SigningOut | None = None
+        try:
+            names = apk.names()
+            v1 = any(n.upper().startswith("META-INF/")
+                     and n.upper().endswith((".RSA", ".DSA", ".EC")) for n in names)
+            with open(path, "rb") as fh:
+                facts = signing.analyze_signing(fh.read(), v1)
+            sign_facts = SigningOut(
+                schemes=facts.schemes,
+                signers=tuple(SignerOut(s.sha256, s.subject_cn, s.organization,
+                                        s.is_debug, s.der_bytes) for s in facts.signers),
+                v1_only=facts.v1_only, unsigned=facts.unsigned, note=facts.note,
+            )
+            findings.extend(_signing_findings(sign_facts))
+        except Exception as exc:
+            errors.append(f"signing: {type(exc).__name__}: {exc}")
+
         # --- native stage ----------------------------------------------------
         for lib_path, abi, size in apk.native_libs():
             native.append(NativeSurface(lib=lib_path, abi=abi, size_bytes=size))
@@ -250,6 +302,7 @@ def analyze_path(path: str, *, deep_strings: bool = True) -> dict[str, Any]:
         findings=tuple(findings),
         native=tuple(native),
         declaration=declaration,
+        signing=sign_facts,
         errors=tuple(errors),
     ).to_dict()
 

@@ -33,7 +33,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RESULT = re.compile(r"(\d+)\s+passed,\s+(\d+)\s+failed")
 
 # Raise these when you add tests; never lower them to make a build pass.
-MIN_ENGINE_TESTS = 71
+MIN_ENGINE_TESTS = 97
 MIN_SERVICE_TESTS = 95
 
 

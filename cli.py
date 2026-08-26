@@ -28,6 +28,7 @@ from core import (
     PolicyError,
     analyze_path,
     diff_reports,
+    sbom_json,
 )
 
 BOLD, DIM, RED, YEL, GRN, CYA, OFF = (
@@ -86,6 +87,21 @@ def render(report: dict) -> None:
                   f"{'yes' if d['required'] else 'no'}")
             print(f"    {DIM}{d['justification'][0][:78]}{OFF}")
 
+    sg = report.get("signing") or {}
+    if sg.get("schemes") or sg.get("unsigned"):
+        print(f"\n{BOLD}SIGNING{OFF}")
+        if sg.get("unsigned"):
+            print(f"  {RED}unsigned{OFF}  {DIM}no v1/v2/v3 signature present{OFF}")
+        else:
+            print(f"  schemes       {', '.join(sg['schemes'])}")
+        for sn in sg.get("signers", []):
+            tag = f" {RED}DEBUG KEY{OFF}" if sn["is_debug"] else ""
+            who = sn["subject_cn"] or sn["organization"] or "unknown"
+            print(f"  {who}{tag}")
+            print(f"    {DIM}SHA-256 {sn['sha256']}{OFF}")
+        if sg.get("note"):
+            print(f"  {DIM}{sg['note']}{OFF}")
+
     if report["native"]:
         print(f"\n{BOLD}NATIVE ({len(report['native'])}){OFF}")
         for n in report["native"][:8]:
@@ -110,6 +126,14 @@ def render_drift(d: dict) -> None:
         print(f"  {GRN}resolved{OFF}       {f['title']}")
     for p in d["new_permissions"]:
         print(f"  {YEL}new perm{OFF}       {p}")
+    if d.get("signer_changed"):
+        print(f"  {RED}SIGNER{OFF}         certificate changed between builds")
+        for h in d.get("signers_before", []):
+            print(f"    {DIM}was {h}{OFF}")
+        for h in d.get("signers_after", []):
+            print(f"    {YEL}now {h}{OFF}")
+    for s_ in d.get("schemes_removed", []):
+        print(f"  {YEL}scheme lost{OFF}    {s_}")
     for c in d["new_categories"]:
         print(f"  {RED}DECLARE{OFF}        {c} {DIM}(your Data Safety form is now wrong){OFF}")
     for c in d["removed_categories"]:
@@ -166,6 +190,8 @@ def main() -> int:
     s.add_argument("--json", action="store_true", help="machine output")
     s.add_argument("--fail-on", choices=["high", "medium", "low", "never"],
                    default="never", help="exit 1 when a finding at/above this level exists")
+    s.add_argument("--sbom", metavar="FILE",
+                   help="write a CycloneDX 1.5 SBOM alongside the report")
     s.add_argument("--policy", metavar="FILE",
                    help="evaluate a policy file; exit 1 if any block rule matches")
     s.add_argument("--baseline", metavar="FILE",
@@ -209,6 +235,12 @@ def main() -> int:
     if a.cmd == "scan":
         rep = analyze_path(a.apk)
         print(json.dumps(rep, indent=2)) if a.json else render(rep)
+
+        if a.sbom:
+            with open(a.sbom, "w", encoding="utf-8") as fh:
+                fh.write(sbom_json(rep))
+            if not a.json:
+                print(f"{DIM}SBOM written to {a.sbom}{OFF}\n")
 
         if a.policy:
             drift = None

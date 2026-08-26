@@ -88,6 +88,22 @@ class DeclarationOut(BaseModel):
     justification: list[str]
 
 
+class SignerOut(BaseModel):
+    sha256: str
+    subject_cn: str
+    organization: str
+    is_debug: bool
+    der_bytes: int
+
+
+class SigningOut(BaseModel):
+    schemes: list[str]
+    signers: list[SignerOut]
+    v1_only: bool
+    unsigned: bool
+    note: str = ""
+
+
 class ReportOut(BaseModel):
     schema_version: str
     apk_sha256: str
@@ -99,6 +115,7 @@ class ReportOut(BaseModel):
     findings: list[FindingOut]
     native: list[NativeOut]
     declaration: list[DeclarationOut]
+    signing: SigningOut | None = None
     errors: list[str] = []
 
 
@@ -134,6 +151,10 @@ class DriftOut(BaseModel):
     removed_permissions: list[str]
     new_categories: list[str]
     removed_categories: list[str]
+    signer_changed: bool = False
+    signers_before: list[str] = []
+    signers_after: list[str] = []
+    schemes_removed: list[str] = []
     declaration_changed: bool
     blocking: bool
     summary: str

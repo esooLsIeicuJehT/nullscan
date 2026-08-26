@@ -54,7 +54,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse
 
-from core import ENGINE_VERSION, SCHEMA_VERSION, diff_reports
+from core import ENGINE_VERSION, SCHEMA_VERSION, build_sbom, diff_reports
 
 from . import mailer
 from .billing import (
@@ -305,6 +305,17 @@ async def get_declaration(
     if job is None or not job.get("report"):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no completed report for that id")
     return job["report"]["declaration"]
+
+
+@app.get("/v1/scans/{job_id}/sbom", summary="CycloneDX 1.5 SBOM")
+async def get_sbom(
+    job_id: str,
+    _api_key: Annotated[str | None, Depends(require_api_key)] = None,
+) -> dict[str, Any]:
+    job = store.get(job_id)
+    if job is None or not job.get("report"):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no completed report for that id")
+    return build_sbom(job["report"])
 
 
 @app.post(

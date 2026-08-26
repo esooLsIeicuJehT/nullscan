@@ -250,3 +250,80 @@ def build_apk(
         zf.writestr("resources.arsc", b"\x00" * 64)
         zf.writestr("META-INF/MANIFEST.MF", b"Manifest-Version: 1.0\n")
     return path
+
+
+# ============================ APK SIGNING BLOCK ==============================
+# Encodes the format a second time, from the spec, so core/signing.py's offset
+# arithmetic is proven rather than assumed — same reason the AXML and DEX
+# encoders exist above.
+
+APK_SIG_BLOCK_MAGIC = b"APK Sig Block 42"
+
+
+def _lp(payload: bytes) -> bytes:
+    """uint32 length prefix."""
+    return struct.pack("<I", len(payload)) + payload
+
+
+def fake_der_cert(common_name: str = "Android Debug",
+                  organization: str = "Android",
+                  filler: int = 400) -> bytes:
+    """A byte blob shaped enough like a DER certificate for our shallow reader.
+
+    Not a real X.509 certificate: core/signing.py deliberately does not parse
+    ASN.1, it locates the commonName/organizationName OIDs and reads the
+    printable string that follows. This reproduces exactly that structure.
+    """
+    def attr(oid: bytes, text: str) -> bytes:
+        raw = text.encode()
+        return oid + bytes([0x0C, len(raw)]) + raw
+
+    body = b"\x30\x82" + b"\x00" * 8
+    body += attr(b"\x06\x03\x55\x04\x03", common_name)
+    body += attr(b"\x06\x03\x55\x04\x0a", organization)
+    body += bytes(range(256)) * (filler // 256 + 1)
+    return body[:max(filler, len(body))]
+
+
+def v2_signing_block_value(certs: list[bytes]) -> bytes:
+    """signers -> signer -> signed_data -> certificates -> DER."""
+    signed_data = _lp(b"digests-placeholder") \
+        + _lp(b"".join(_lp(c) for c in certs)) \
+        + _lp(b"")                                    # additional attributes
+    signer = _lp(signed_data) + _lp(b"signatures") + _lp(b"public-key")
+    return _lp(_lp(signer))
+
+
+def sign_apk(path: str, certs: list[bytes] | None = None,
+             scheme_ids: tuple[int, ...] = (0x7109871A,)) -> str:
+    """Insert an APK Signing Block before the central directory, in place.
+
+    This is what apksigner does: splice the block in, then bump the central
+    directory offset recorded in the End of Central Directory record. Forget
+    the second half and every zip tool reports a corrupt archive.
+    """
+    certs = certs or [fake_der_cert()]
+    with open(path, "rb") as fh:
+        data = fh.read()
+
+    eocd = data.rfind(b"PK\x05\x06")
+    if eocd == -1:
+        raise ValueError("no EOCD in test fixture")
+    (cd_offset,) = struct.unpack_from("<I", data, eocd + 16)
+
+    value = v2_signing_block_value(certs)
+    pairs = b""
+    for sid in scheme_ids:
+        pairs += struct.pack("<Q", 4 + len(value)) + struct.pack("<I", sid) + value
+
+    size_of_block = len(pairs) + 8 + len(APK_SIG_BLOCK_MAGIC)
+    block = (struct.pack("<Q", size_of_block) + pairs
+             + struct.pack("<Q", size_of_block) + APK_SIG_BLOCK_MAGIC)
+
+    patched = bytearray(data[:cd_offset] + block + data[cd_offset:])
+    new_eocd = eocd + len(block)
+    struct.pack_into("<I", patched, new_eocd + 16, cd_offset + len(block))
+
+    with open(path, "wb") as fh:
+        fh.write(bytes(patched))
+    return path
