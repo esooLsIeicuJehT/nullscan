@@ -1,0 +1,50 @@
+[project]
+name = "nullscan"
+version = "0.3.0"
+description = "Android compliance scanner: Play Data Safety declarations and build-over-build drift"
+requires-python = ">=3.11"
+# Intentionally empty. core/, cli.py and tools/ are stdlib-only by contract —
+# see tests/test_suites.py::Boundaries. The web service's deps live in
+# requirements.txt so `pip install nullscan` never drags in a framework.
+dependencies = []
+
+[project.optional-dependencies]
+service = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "pydantic>=2.7", "python-multipart>=0.0.9"]
+dev = ["ruff>=0.6", "mypy>=1.11", "bandit>=1.7", "pip-audit>=2.7"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["web"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes
+    "I",         # import sorting
+    "B",         # bugbear
+    "UP",        # pyupgrade
+    "SIM",       # simplify
+    "S",         # bandit-equivalent security rules
+    "RUF",
+]
+ignore = [
+    "E501",    # long lines: the signature table is more readable wide
+    "S101",    # assert: the test suites are assert-driven by design
+    "S310",    # urllib audit: URLs here are constants, not user input
+    "B008",    # FastAPI's Depends() in defaults is the documented idiom
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*"  = ["S", "B", "SIM"]
+"tools/*"  = ["S603", "S607"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+warn_redundant_casts = true
+ignore_missing_imports = true
+# core/ is the part that must not rot; the service is thin glue over it.
+[[tool.mypy.overrides]]
+module = "core.*"
+disallow_untyped_defs = true

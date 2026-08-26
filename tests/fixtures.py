@@ -81,7 +81,7 @@ class AxmlBuilder:
             self._ns_prefix, self._ns_uri,
         )
 
-    def start(self, tag: str, attrs: dict[str, object] | None = None) -> "AxmlBuilder":
+    def start(self, tag: str, attrs: dict[str, object] | None = None) -> AxmlBuilder:
         attrs = attrs or {}
         name_idx = self.pool.add(tag)
         packed = bytearray()
@@ -111,14 +111,14 @@ class AxmlBuilder:
         self._body += packed
         return self
 
-    def end(self, tag: str) -> "AxmlBuilder":
+    def end(self, tag: str) -> AxmlBuilder:
         name_idx = self.pool.add(tag)
         self._body += struct.pack(
             "<HHIIIII", RES_XML_END_EL, 16, 24, 1, 0xFFFFFFFF, 0xFFFFFFFF, name_idx
         )
         return self
 
-    def element(self, tag: str, attrs: dict[str, object] | None = None) -> "AxmlBuilder":
+    def element(self, tag: str, attrs: dict[str, object] | None = None) -> AxmlBuilder:
         return self.start(tag, attrs).end(tag)
 
     def build(self) -> bytes:

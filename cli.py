@@ -21,7 +21,14 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from core import ENGINE_VERSION, analyze_path, diff_reports  # noqa: E402
+from core import (
+    DEFAULT_POLICY_TOML,
+    ENGINE_VERSION,
+    Policy,
+    PolicyError,
+    analyze_path,
+    diff_reports,
+)
 
 BOLD, DIM, RED, YEL, GRN, CYA, OFF = (
     "\033[1m", "\033[2m", "\033[31m", "\033[33m", "\033[32m", "\033[36m", "\033[0m"
@@ -110,6 +117,46 @@ def render_drift(d: dict) -> None:
     print(f"\n  {BOLD}{d['summary']}{OFF}\n")
 
 
+def render_policy(d: dict) -> None:
+    print(f"\n{BOLD}POLICY{OFF}  {DIM}{d['policy_name']}{OFF}")
+    print(f"{DIM}{'─' * 68}{OFF}")
+    for r in d["results"]:
+        if not r["matched"]:
+            print(f"  {GRN}pass{OFF}      {DIM}{r['rule_id']}{OFF}")
+            continue
+        color = RED if r["action"] == "block" else YEL
+        print(f"  {color}{r['action'].upper():<9}{OFF} {BOLD}{r['rule_id']}{OFF}")
+        if r["reason"]:
+            print(f"            {DIM}{r['reason']}{OFF}")
+        for e in r["evidence"]:
+            print(f"            {CYA}{e}{OFF}")
+    for w in d["waived"]:
+        print(f"  {DIM}waived    {w}{OFF}")
+    for sk in d.get("skipped", []):
+        print(f"  {DIM}skipped   {sk}{OFF}")
+    for w in d["expired_waivers"]:
+        # Loud on purpose: an expired waiver means a rule silently came back
+        # on, and the resulting failure would otherwise look like it appeared
+        # from nowhere.
+        print(f"  {YEL}EXPIRED{OFF}   {w} {DIM}— this rule is enforcing again{OFF}")
+    print(f"\n  {BOLD}{d['summary']}{OFF}\n")
+
+
+def _apply_policy(path: str, report: dict, drift: dict | None) -> int:
+    try:
+        policy = Policy.load(path)
+    except PolicyError as exc:
+        print(f"{RED}policy error:{OFF} {exc}", file=sys.stderr)
+        return 2
+    try:
+        decision = policy.evaluate(report, drift)
+    except PolicyError as exc:
+        print(f"{RED}policy error:{OFF} {exc}", file=sys.stderr)
+        return 2
+    render_policy(decision.to_dict())
+    return 1 if decision.blocked else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="nullscan")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -119,6 +166,10 @@ def main() -> int:
     s.add_argument("--json", action="store_true", help="machine output")
     s.add_argument("--fail-on", choices=["high", "medium", "low", "never"],
                    default="never", help="exit 1 when a finding at/above this level exists")
+    s.add_argument("--policy", metavar="FILE",
+                   help="evaluate a policy file; exit 1 if any block rule matches")
+    s.add_argument("--baseline", metavar="FILE",
+                   help="baseline report, so drift conditions can be evaluated")
 
     d = sub.add_parser("diff", help="compare a baseline against a candidate")
     d.add_argument("base", help="baseline .json report or .apk")
@@ -126,20 +177,62 @@ def main() -> int:
     d.add_argument("--json", action="store_true")
     d.add_argument("--fail-on-drift", action="store_true",
                    help="exit 1 when the Data Safety declaration would change")
+    d.add_argument("--policy", metavar="FILE",
+                   help="evaluate a policy file against the candidate and the drift")
+
+    p = sub.add_parser("policy", help="create or check a policy file")
+    p.add_argument("action", choices=["init", "check"])
+    p.add_argument("file", nargs="?", default="nullscan.toml")
 
     a = ap.parse_args()
+
+    if a.cmd == "policy":
+        if a.action == "init":
+            if os.path.exists(a.file):
+                print(f"{a.file} already exists; not overwriting", file=sys.stderr)
+                return 1
+            with open(a.file, "w", encoding="utf-8") as fh:
+                fh.write(DEFAULT_POLICY_TOML)
+            print(f"wrote {a.file}")
+            return 0
+        try:
+            pol = Policy.load(a.file)
+        except PolicyError as exc:
+            print(f"{RED}invalid:{OFF} {exc}", file=sys.stderr)
+            return 1
+        print(f"{GRN}valid{OFF}  {pol.name}  {len(pol.rules)} rule(s)")
+        for r in pol.rules:
+            exp = f"  expires {r.expires}" if r.expires else ""
+            print(f"  {r.action:<6} {r.id}{DIM}{exp}{OFF}")
+        return 0
 
     if a.cmd == "scan":
         rep = analyze_path(a.apk)
         print(json.dumps(rep, indent=2)) if a.json else render(rep)
+
+        if a.policy:
+            drift = None
+            if a.baseline:
+                drift = diff_reports(_load(a.baseline), rep).to_dict()
+            code = _apply_policy(a.policy, rep, drift)
+            if code:
+                return code
+
         if a.fail_on != "never":
             order = {"high": 0, "medium": 1, "low": 2, "info": 3}
             worst = min((order[f["severity"]] for f in rep["findings"]), default=99)
             return 1 if worst <= order[a.fail_on] else 0
         return 0
 
-    drift = diff_reports(_load(a.base), _load(a.head)).to_dict()
+    head_report = _load(a.head)
+    drift = diff_reports(_load(a.base), head_report).to_dict()
     print(json.dumps(drift, indent=2)) if a.json else render_drift(drift)
+
+    if a.policy:
+        code = _apply_policy(a.policy, head_report, drift)
+        if code:
+            return code
+
     return 1 if (a.fail_on_drift and drift["blocking"]) else 0
 
 

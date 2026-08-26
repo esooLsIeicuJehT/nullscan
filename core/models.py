@@ -12,12 +12,12 @@ them for the HTTP contract.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
-from enum import Enum
+from dataclasses import asdict, dataclass, field
+from enum import Enum, StrEnum
 from typing import Any
 
 
-class DataCategory(str, Enum):
+class DataCategory(StrEnum):
     """Google Play Data Safety taxonomy (the subset that is machine-detectable)."""
 
     LOCATION_PRECISE = "location.precise"
@@ -39,14 +39,14 @@ class DataCategory(str, Enum):
     DEVICE_IDS = "device_or_other_ids"
 
 
-class Severity(str, Enum):
+class Severity(StrEnum):
     INFO = "info"
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
 
 
-class Confidence(str, Enum):
+class Confidence(StrEnum):
     """How much the finding should be trusted without human review."""
 
     CERTAIN = "certain"      # structural fact (permission in manifest)
@@ -149,10 +149,14 @@ class ScanReport:
     def to_dict(self) -> dict[str, Any]:
         """Pure-JSON projection.
 
-        `asdict` leaves str-Enum members in place. They compare equal to their
-        value but hash by NAME, so `"financial" in {DataCategory.FINANCIAL}` is
-        False. That silently breaks every set operation downstream — including
-        the diff engine. Normalise once, here, at the boundary.
+        `asdict` leaves enum members in place. They serialise and compare fine
+        today because StrEnum members ARE str — an earlier version of this
+        comment claimed they hash by name, which is not true and was a
+        misdiagnosis. The real reason to normalise is the contract: a report
+        round-tripped through JSON and one straight from the engine must be
+        byte-identical, because `core.diff` compares them against each other
+        and a stored baseline may be months old. Converting once here means
+        that guarantee does not depend on enum semantics staying put.
         """
         return _plain(asdict(self))
 

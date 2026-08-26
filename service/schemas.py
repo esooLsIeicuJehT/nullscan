@@ -181,3 +181,28 @@ class WaitlistIn(BaseModel):
 class WaitlistOut(BaseModel):
     email: str
     added: bool = Field(description="False when the address was already on the list")
+
+
+class RecoverIn(BaseModel):
+    email: str = Field(max_length=254)
+
+
+class RecoverOut(BaseModel):
+    """Deliberately says the same thing whether or not an account exists.
+
+    Differentiating turns this endpoint into a customer-list oracle: anyone
+    could test addresses to learn who pays for the product.
+    """
+
+    sent: bool = Field(description="Always true; carries no information about the address")
+    message: str
+
+
+class AccountOut(BaseModel):
+    tier: str
+    status: str
+    email_masked: str | None
+    limit: int
+    used: int
+    remaining: int
+    resets_in_s: int

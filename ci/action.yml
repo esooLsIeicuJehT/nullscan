@@ -59,9 +59,14 @@ runs:
           exit 0
         fi
 
+        args=(diff "${{ inputs.baseline }}" "$out")
+        if [ -n "${{ inputs.policy }}" ]; then
+          args+=(--policy "${{ inputs.policy }}")
+        else
+          args+=(--fail-on-drift)
+        fi
         set +e
-        python3 "${{ github.action_path }}/../cli.py" diff \
-          "${{ inputs.baseline }}" "$out" --fail-on-drift
+        python3 "${{ github.action_path }}/../cli.py" "${args[@]}"
         drift=$?
         set -e
 

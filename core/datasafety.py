@@ -65,7 +65,10 @@ def build_declaration(
     # stream 2: linked SDKs (these are also the *sharing* signal)
     for sdk in sdks:
         for cat in sdk.collects:
-            add(cat, f"{sdk.name} SDK is linked")
+            # "Meta Android SDK SDK is linked" — several vendor names already
+            # end in SDK, and this string is customer-facing on the declaration.
+            label = sdk.name if sdk.name.upper().endswith("SDK") else f"{sdk.name} SDK"
+            add(cat, f"{label} is linked")
             if sdk.shares_with_third_party:
                 shared.add(cat)
 
@@ -76,13 +79,13 @@ def build_declaration(
 
     # Precise location without ACCESS_FINE_LOCATION is a false positive from the
     # fused-location SDK signature. Downgrade rather than over-declare.
-    if manifest and DC.LOCATION_PRECISE in collected:
-        if "android.permission.ACCESS_FINE_LOCATION" not in manifest.permissions:
-            reasons = collected.pop(DC.LOCATION_PRECISE)
-            for r in reasons:
-                add(DC.LOCATION_APPROX, r + " [downgraded: no FINE_LOCATION permission]")
-            shared.discard(DC.LOCATION_PRECISE)
-            required.discard(DC.LOCATION_PRECISE)
+    if (manifest and DC.LOCATION_PRECISE in collected
+            and "android.permission.ACCESS_FINE_LOCATION" not in manifest.permissions):
+        reasons = collected.pop(DC.LOCATION_PRECISE)
+        for r in reasons:
+            add(DC.LOCATION_APPROX, r + " [downgraded: no FINE_LOCATION permission]")
+        shared.discard(DC.LOCATION_PRECISE)
+        required.discard(DC.LOCATION_PRECISE)
 
     lines = [
         DeclarationLine(

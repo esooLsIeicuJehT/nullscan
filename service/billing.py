@@ -137,6 +137,20 @@ class BillingStore:
             )
         return cur.rowcount
 
+    def active_key_for_email(self, email: str) -> dict[str, Any] | None:
+        """Most recent ACTIVE key for an address.
+
+        Active only: handing back a cancelled key would look like the
+        subscription still works, and the 402 they'd hit on first use is a
+        worse way to learn otherwise than being told there is no key.
+        """
+        with self._conn() as c:
+            row = c.execute(
+                "SELECT * FROM api_keys WHERE email=? AND status='active' "
+                "ORDER BY created_at DESC LIMIT 1", ((email or "").strip().lower(),)
+            ).fetchone()
+        return dict(row) if row else None
+
     def key_for_subscription(self, subscription_id: str) -> str | None:
         with self._conn() as c:
             row = c.execute("SELECT key FROM api_keys WHERE subscription_id=?",
@@ -163,10 +177,24 @@ class StripeError(RuntimeError):
     pass
 
 
+def _require_https(url: str) -> None:
+    """Refuse anything that is not https.
+
+    These URLs are module constants today, so this cannot currently fail. It is
+    here so that stays true: the moment an endpoint becomes configurable, a
+    file:// or http:// value would otherwise exfiltrate an API key or send one
+    in the clear, and nothing would complain.
+    """
+    if not url.startswith("https://"):
+        raise StripeError(f"refusing non-https endpoint: {url[:60]}")
+
+
 def _post(path: str, secret_key: str, params: list[tuple[str, str]],
           *, idempotency_key: str | None = None, timeout: int = 20) -> dict[str, Any]:
+    url = f"{STRIPE_API}{path}"
+    _require_https(url)
     body = urllib.parse.urlencode(params).encode()
-    req = urllib.request.Request(f"{STRIPE_API}{path}", data=body, method="POST")
+    req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Authorization", f"Bearer {secret_key}")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     if idempotency_key:

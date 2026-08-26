@@ -147,6 +147,24 @@ td{padding:11px 12px 11px 0;border-bottom:1px solid #171E28;vertical-align:top}
 .card li:before{content:"";position:absolute;left:0;top:13px;width:6px;height:1px;background:var(--dimmer)}
 .pnote{font-family:var(--mono);font-size:12px;color:var(--dimmer);margin-top:20px}
 
+
+/* ---------- account ---------- */
+.acct{border-top:1px solid var(--line);padding:64px 0}
+.acct h2{font-family:var(--mono);font-size:clamp(20px,3.2vw,28px);font-weight:600;letter-spacing:-.03em;margin:0 0 10px}
+.acct p.sub{color:var(--dim);max-width:54ch;margin:0 0 26px}
+.acct .row{display:flex;gap:10px;flex-wrap:wrap;max-width:520px;margin-bottom:10px}
+.acct input{flex:1;min-width:220px;background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:11px 14px;color:var(--text);font-family:var(--mono);font-size:13px}
+.acct input::placeholder{color:var(--dimmer)}
+.acct input:focus{border-color:var(--med);outline:none}
+.panel{display:none;border:1px solid var(--line);border-radius:8px;background:var(--panel-2);padding:22px 24px;margin-top:20px;max-width:520px}
+.panel.on{display:block}
+.kv{display:flex;justify-content:space-between;gap:16px;padding:9px 0;border-bottom:1px solid #171E28;font-family:var(--mono);font-size:13px}
+.kv:last-of-type{border-bottom:0}
+.kv span:first-child{color:var(--dim)}
+.meter{height:3px;background:var(--line);border-radius:3px;overflow:hidden;margin:16px 0 6px}
+.meter i{display:block;height:100%;background:var(--med)}
+.hr{border:0;border-top:1px solid var(--line);margin:34px 0}
+
 /* ---------- waitlist ---------- */
 .diff{border-top:1px solid var(--line);padding:64px 0 80px}
 .diff h2{font-family:var(--mono);font-size:clamp(20px,3.2vw,28px);font-weight:600;letter-spacing:-.03em;margin:0 0 14px;max-width:22ch}
@@ -181,6 +199,7 @@ footer{border-top:1px solid var(--line);padding:26px 0 44px;font-family:var(--mo
       <a href="#how">How it reads your APK</a>
       <a href="#track">Track builds</a>
       <a href="#pricing">Pricing</a>
+      <a href="#account">Account</a>
     </nav>
   </div>
 </header>
@@ -274,6 +293,41 @@ footer{border-top:1px solid var(--line);padding:26px 0 44px;font-family:var(--mo
       <button class="btn ghost" id="join">Get early access</button>
     </div>
     <div class="note" id="note" role="status"></div>
+  </div>
+</section>
+
+
+<section class="acct" id="account">
+  <div class="wrap">
+    <h2>Your account</h2>
+    <p class="sub">Your API key is the whole account &mdash; no password to forget. Paste it to see usage, or manage billing.</p>
+
+    <div class="row">
+      <input type="password" id="akey" placeholder="nsk_..." autocomplete="off" aria-label="API key">
+      <button class="btn" id="acheck">Check</button>
+    </div>
+    <div class="note" id="anote" role="status"></div>
+
+    <div class="panel" id="apanel">
+      <div class="kv"><span>Plan</span><strong id="aTier">&mdash;</strong></div>
+      <div class="kv"><span>Status</span><strong id="aStatus">&mdash;</strong></div>
+      <div class="kv"><span>Email</span><strong id="aMail">&mdash;</strong></div>
+      <div class="kv"><span>Scans this month</span><strong id="aUse">&mdash;</strong></div>
+      <div class="meter"><i id="aMeter"></i></div>
+      <div style="margin-top:18px">
+        <button class="btn ghost" id="aportal">Manage billing</button>
+      </div>
+    </div>
+
+    <hr class="hr">
+
+    <h2 style="font-size:17px">Lost your key?</h2>
+    <p class="sub">We'll re-send it to the address that paid. Keys go nowhere else.</p>
+    <div class="row">
+      <input type="email" id="rmail" placeholder="you@studio.dev" autocomplete="email" aria-label="Email address">
+      <button class="btn ghost" id="rsend">Email it to me</button>
+    </div>
+    <div class="note" id="rnote" role="status"></div>
   </div>
 </section>
 
@@ -511,6 +565,83 @@ footer{border-top:1px solid var(--line);padding:26px 0 44px;font-family:var(--mo
     n.textContent = 'Payment received. Your API key is on its way to your email.';
     location.hash = '#track';
   }
+
+
+  /* ---- account ---- */
+  function fmtReset(sec){
+    if (!sec) return 'n/a';
+    var d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600);
+    return d ? d + 'd ' + h + 'h' : h + 'h';
+  }
+
+  $('acheck').addEventListener('click', function(){
+    var k = $('akey').value.trim(), n = $('anote');
+    if (!k) { n.className = 'note no'; n.textContent = 'Paste your key first.'; return; }
+    n.className = 'note'; n.textContent = 'Checking…';
+    fetch(API + '/v1/account', { headers: { 'X-API-Key': k } })
+      .then(function(r){ return r.json().then(function(b){ return { s: r.status, b: b }; }); })
+      .then(function(res){
+        if (res.s === 402) {
+          n.className = 'note no';
+          n.textContent = res.b.error || 'This key is inactive. Update billing to reactivate it.';
+          $('apanel').classList.remove('on');
+          return;
+        }
+        if (res.s !== 200) {
+          n.className = 'note no';
+          n.textContent = res.b.error || 'That key was not recognised.';
+          $('apanel').classList.remove('on');
+          return;
+        }
+        var a = res.b;
+        n.className = 'note ok'; n.textContent = '';
+        $('aTier').textContent = a.tier;
+        $('aStatus').textContent = a.status;
+        $('aMail').textContent = a.email_masked || 'not on file';
+        $('aUse').textContent = a.limit < 0
+          ? a.used + ' (unmetered)'
+          : a.used + ' of ' + a.limit.toLocaleString() + ' · resets in ' + fmtReset(a.resets_in_s);
+        $('aMeter').style.width = a.limit > 0
+          ? Math.min(100, (a.used / a.limit) * 100) + '%' : '0%';
+        $('apanel').classList.add('on');
+      }).catch(function(){
+        n.className = 'note no'; n.textContent = 'Could not reach the server.';
+      });
+  });
+
+  $('aportal').addEventListener('click', function(){
+    var k = $('akey').value.trim(), n = $('anote');
+    n.className = 'note'; n.textContent = 'Opening billing…';
+    fetch(API + '/v1/billing-portal', { method: 'POST', headers: { 'X-API-Key': k } })
+      .then(function(r){ return r.json().then(function(b){ return { s: r.status, b: b }; }); })
+      .then(function(res){
+        if (res.s === 200 && res.b.url) { window.location.href = res.b.url; return; }
+        n.className = 'note no';
+        n.textContent = res.b.error || 'Billing portal is unavailable.';
+      }).catch(function(){
+        n.className = 'note no'; n.textContent = 'Could not reach the server.';
+      });
+  });
+
+  $('rsend').addEventListener('click', function(){
+    var v = $('rmail').value.trim(), n = $('rnote');
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) {
+      n.className = 'note no'; n.textContent = 'That address does not look right.'; return;
+    }
+    n.className = 'note'; n.textContent = 'Sending…';
+    fetch(API + '/v1/keys/recover', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: v })
+    }).then(function(r){ return r.json(); })
+      .then(function(b){
+        // Deliberately the same message whether or not an account exists —
+        // anything else lets someone probe for who pays for this.
+        n.className = 'note ok';
+        n.textContent = b.message || 'If that address has a subscription, the key is on its way.';
+      }).catch(function(){
+        n.className = 'note no'; n.textContent = 'Could not reach the server.';
+      });
+  });
 
   /* ---- waitlist ---- */
   var note = $('note');

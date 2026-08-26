@@ -82,9 +82,9 @@ class AxmlError(ValueError):
 class XmlNode:
     tag: str
     attrs: dict[str, str] = field(default_factory=dict)
-    children: list["XmlNode"] = field(default_factory=list)
+    children: list[XmlNode] = field(default_factory=list)
 
-    def find_all(self, tag: str) -> list["XmlNode"]:
+    def find_all(self, tag: str) -> list[XmlNode]:
         out: list[XmlNode] = []
         stack = [self]
         while stack:
@@ -118,7 +118,7 @@ def _read_string_pool(buf: bytes, off: int) -> tuple[_StringPool, int]:
     if chunk_type != RES_STRING_POOL:
         raise AxmlError(f"expected string pool at {off:#x}, got {chunk_type:#x}")
 
-    string_count, style_count, flags, strings_start, _styles_start = struct.unpack_from(
+    string_count, _style_count, flags, strings_start, _styles_start = struct.unpack_from(
         "<IIIII", buf, off + 8
     )
     is_utf8 = bool(flags & UTF8_FLAG)

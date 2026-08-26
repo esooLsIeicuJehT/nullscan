@@ -43,8 +43,8 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import ENGINE_VERSION, analyze_path  # noqa: E402
-from service.billing import TIERS  # noqa: E402  (pure data, no framework imports)
+from core import ENGINE_VERSION, analyze_path
+from service.billing import TIERS
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGE = os.path.join(ROOT, "web", "index.html")
@@ -138,7 +138,7 @@ def run_scan(job_id: str, path: str) -> None:
             JOBS[job_id].update(state="done", report=report, finished_at=time.time())
             if report.get("apk_sha256"):
                 BY_SHA[report["apk_sha256"]] = report
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         with LOCK:
             JOBS[job_id].update(state="failed", error=f"{type(exc).__name__}: {exc}")
     finally:
@@ -184,7 +184,7 @@ class Handler(BaseHTTPRequestHandler):
         return b"".join(chunks)
 
     # --- routes ----------------------------------------------------------
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         p = urlparse(self.path)
 
         if p.path in ("/", "/index.html"):
@@ -225,6 +225,10 @@ class Handler(BaseHTTPRequestHandler):
                             "resets_in_s": 0, "metered": False})
             return
 
+        if p.path == "/v1/account":
+            self.err("Accounts run on the real server, not the dev one.", 503)
+            return
+
         m = re.fullmatch(r"/v1/scans/([0-9a-f]{32})", p.path)
         if m:
             with LOCK:
@@ -237,13 +241,13 @@ class Handler(BaseHTTPRequestHandler):
 
         self.err("not found", 404)
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         p = urlparse(self.path)
 
-        if p.path in ("/v1/checkout", "/v1/billing-portal"):
+        if p.path in ("/v1/checkout", "/v1/billing-portal", "/v1/keys/recover"):
             self.read_body()
-            self.err("Billing runs on the real server, not the dev one. "
-                     "Start service/ with Stripe keys configured.", 503)
+            self.err("Accounts and billing run on the real server, not the dev "
+                     "one. Start service/ with Stripe and mail configured.", 503)
             return
 
         if p.path == "/v1/waitlist":
@@ -302,7 +306,7 @@ class Handler(BaseHTTPRequestHandler):
             os.close(fd)
             try:
                 parsed = stream_multipart_to_file(self.rfile, total, ctype, path)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 os.unlink(path)
                 self.err(f"could not read the upload: {exc}", 400)
                 return

@@ -23,10 +23,10 @@ os.environ.setdefault("NULLSCAN_WORKERS", "2")
 # every future test insertion a hidden dependency.
 os.environ.setdefault("NULLSCAN_FREE_SCANS", "500")
 
-from fastapi.testclient import TestClient          # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
-from service.main import app                       # noqa: E402
-from tests.fixtures import build_apk               # noqa: E402
+from service.main import app  # noqa: E402
+from tests.fixtures import build_apk  # noqa: E402
 from tests.test_engine import make_dex, make_manifest  # noqa: E402
 
 PASS = FAIL = 0
@@ -233,6 +233,7 @@ def main() -> int:
 
         print("\n\033[1m[12] Billing: webhook, provisioning, key lifecycle\033[0m")
         import json as _json
+
         from service.billing import TIERS, apply_event, sign_webhook, verify_webhook
         from service.billing import StripeError as _SE
         from service.main import billing as bstore
@@ -370,7 +371,74 @@ def main() -> int:
         check("bad webhook returns 400 so Stripe stops retrying",
               r.status_code == 400, str(r.status_code))
 
-        print("\n\033[1m[13] OpenAPI contract is real\033[0m")
+        print("\n\033[1m[13] Key delivery, recovery, account\033[0m")
+        import service.mailer as _m
+        sent = []
+        real_send = _m.send
+        try:
+            _m.send = lambda **kw: (sent.append(kw) or True)
+
+            evtd = {"id": "evt_mail", "type": "checkout.session.completed",
+                    "data": {"object": {"metadata": {"tier": "indie"},
+                                        "subscription": "sub_mail", "customer": "cus_m",
+                                        "customer_details": {"email": "mailme@studio.dev"}}}}
+            raw2 = _json.dumps(evtd).encode()
+            os.environ["NULLSCAN_TMP"] = "1"
+            from service.config import settings as cfg2
+            object.__setattr__(cfg2, "stripe_webhook_secret", secret) \
+                if False else None
+            # drive the reducer + delivery through the real webhook path
+            import service.main as _main
+            _main.settings.__class__
+            res_d = apply_event(evtd, bstore)
+            check("second buyer provisioned", res_d["action"] == "key_issued", str(res_d))
+            key2 = res_d["key"]
+
+            _, body = _m.key_delivery(key=key2, tier_name="Indie",
+                                      monthly_scans=200, base_url="https://x.dev")
+            check("delivery email contains the key", key2 in body)
+            check("delivery email explains the caveat",
+                  "LINKED" in body and "not that it is called" in body)
+            check("delivery email shows the free re-scan trick", "sha256=" in body)
+
+            # --- recovery ---
+            r = client.post("/v1/keys/recover", json={"email": "mailme@studio.dev"})
+            check("recover returns 200", r.status_code == 200, r.text)
+            check("recover sent the mail", any(k["to"] == "mailme@studio.dev" for k in sent),
+                  str([k.get("to") for k in sent]))
+            check("recovered mail carries the key",
+                  any(key2 in k.get("text", "") for k in sent))
+
+            before = len(sent)
+            r2 = client.post("/v1/keys/recover", json={"email": "nobody@nowhere.dev"})
+            check("unknown address gets an identical reply",
+                  r2.json() == r.json(), f"{r.json()} vs {r2.json()}")
+            check("unknown address triggers no email", len(sent) == before)
+
+            r3 = client.post("/v1/keys/recover", json={"email": "not-an-email"})
+            check("malformed address also identical (no oracle)",
+                  r3.json() == r.json(), r3.text)
+
+            before = len(sent)
+            for _ in range(12):
+                client.post("/v1/keys/recover", json={"email": "mailme@studio.dev"})
+            check("recovery is rate limited per address",
+                  len(sent) - before <= cfg.recover_per_day,
+                  f"{len(sent) - before} emails sent")
+
+            # --- account ---
+            r = client.get("/v1/account", headers={"X-API-Key": key2})
+            a = r.json()
+            check("account 200", r.status_code == 200, r.text)
+            check("account reports tier", a["tier"] == "indie", r.text)
+            check("email is masked, not exposed",
+                  a["email_masked"] == "m****e@studio.dev", str(a["email_masked"]))
+            check("account without a key is 401",
+                  client.get("/v1/account").status_code == 401)
+        finally:
+            _m.send = real_send
+
+        print("\n\033[1m[14] OpenAPI contract is real\033[0m")
         spec = client.get("/openapi.json").json()
         check("POST /v1/scans documented", "/v1/scans" in spec["paths"])
         check("diff is POST only",

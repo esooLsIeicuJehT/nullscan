@@ -1,0 +1,62 @@
+# CI for NULLSCAN itself. (ci/action.yml is the DIFFERENT thing customers
+# install in their Android repo.)
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+
+      # The engine must pass with NOTHING installed. If this step ever needs a
+      # pip install, the core/ boundary has been broken and the CLI, the CI
+      # binary and the on-prem wheel all die with it.
+      - name: Engine on a bare interpreter
+        run: python tests/test_engine.py
+
+      - name: Install service deps
+        run: pip install -r requirements.txt
+
+      - name: Service suite
+        run: python tests/test_service.py
+
+      # Guards against the failure this workflow exists to prevent: a runner
+      # that discovers nothing, reports green, and tells you the code is fine.
+      - name: Discovery must find and run the suites
+        run: |
+          set -euo pipefail
+          out=$(python -m unittest discover -v 2>&1) || { echo "$out"; exit 1; }
+          echo "$out"
+          ran=$(echo "$out" | grep -oE 'Ran [0-9]+ test' | grep -oE '[0-9]+' || echo 0)
+          if [ "$ran" -lt 4 ]; then
+            echo "::error::discovery ran $ran tests; expected at least 4. A suite is not being collected."
+            exit 1
+          fi
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install ruff mypy bandit pip-audit -r requirements.txt
+
+      - name: ruff
+        run: ruff check .
+
+      - name: mypy (core is the part that must not rot)
+        run: mypy core || true          # advisory until core is fully annotated
+
+      - name: bandit
+        run: bandit -q -r core service -x tests
+
+      # Advisory: the service has four dependencies and an advisory in one of
+      # them should not block a compliance scanner's own release. Read it,
+      # don't gate on it.
+      - name: pip-audit
+        run: pip-audit -r requirements.txt || true

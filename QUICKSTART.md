@@ -227,10 +227,25 @@ Point a Stripe webhook at `POST /v1/stripe/webhook` and subscribe to
 Without those vars, `/v1/checkout` returns 503 and everything else works — so
 local dev and self-hosting need no Stripe account.
 
-**One thing is deliberately unfinished:** a provisioned key is written to the
-log, not emailed. `service/main.py` logs `PROVISIONED <tier> key for <email>`.
-Wire that to your mail provider before taking real money — until then you are
-the delivery mechanism.
+**Key delivery is automatic.** On `checkout.session.completed` the webhook
+issues the key and emails it. Set `RESEND_API_KEY` and it sends; leave it unset
+and it logs `PROVISIONED ...` instead, so nothing breaks in test mode.
+
+Mail setup (5 minutes, one-off):
+
+1. resend.com -> sign up -> API Keys -> create one (`re_...`)
+2. Railway -> Variables:
+   ```
+   RESEND_API_KEY=re_...
+   NULLSCAN_MAIL_FROM=NULLSCAN <keys@yourdomain.dev>
+   ```
+3. Resend -> Domains -> add your domain, paste the DNS records at your
+   registrar. Takes ~10 min to verify.
+
+**Testing without a domain:** set `NULLSCAN_MAIL_FROM=onboarding@resend.dev`.
+Resend allows that sender with no verification, but it will only deliver to the
+address you signed up with. Good enough to confirm the pipeline; you need your
+own domain before real customers.
 
 Keys live in SQLite with a tier, a status and a Stripe subscription id, so
 cancellation is a state change rather than a redeploy. A lapsed key gets

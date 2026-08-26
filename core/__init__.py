@@ -7,5 +7,14 @@ a web app you can never ship on-prem.
 
 from .analyzer import ENGINE_VERSION, SCHEMA_VERSION, analyze_path
 from .diff import diff_reports
+from .policy import DEFAULT_POLICY_TOML, Policy, PolicyError
 
-__all__ = ["analyze_path", "diff_reports", "ENGINE_VERSION", "SCHEMA_VERSION"]
+__all__ = [
+    "DEFAULT_POLICY_TOML",
+    "ENGINE_VERSION",
+    "SCHEMA_VERSION",
+    "Policy",
+    "PolicyError",
+    "analyze_path",
+    "diff_reports",
+]

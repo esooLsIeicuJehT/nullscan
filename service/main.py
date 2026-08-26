@@ -32,11 +32,14 @@ WHAT CHANGED FROM THE ORIGINAL SKETCH
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
+import re
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, AsyncIterator
+from typing import Annotated, Any
 
 from fastapi import (
     Depends,
@@ -53,7 +56,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from core import ENGINE_VERSION, SCHEMA_VERSION, diff_reports
 
-from .config import settings
+from . import mailer
 from .billing import (
     TIERS,
     BillingStore,
@@ -63,9 +66,11 @@ from .billing import (
     create_portal_session,
     verify_webhook,
 )
+from .config import settings
 from .jobs import Dispatcher
 from .public import PublicStore, client_principal, valid_email
 from .schemas import (
+    AccountOut,
     CheckoutIn,
     CheckoutOut,
     DiffRequest,
@@ -73,16 +78,15 @@ from .schemas import (
     ErrorOut,
     JobOut,
     QuotaOut,
-    ReportOut,
-    TierOut,
+    RecoverIn,
+    RecoverOut,
     SubmitAccepted,
+    TierOut,
     WaitlistIn,
     WaitlistOut,
 )
 from .security import bind_key_store, require_api_key, verify_signature
 from .store import JobStore
-
-import re
 
 _HEX64 = re.compile(r"[0-9a-fA-F]{64}")
 
@@ -136,10 +140,8 @@ async def _spool_upload(file: UploadFile) -> tuple[str, int]:
                     )
                 out.write(chunk)
     except BaseException:
-        try:
+        with contextlib.suppress(OSError):
             os.unlink(dest)
-        except OSError:
-            pass
         raise
     if written == 0:
         os.unlink(dest)
@@ -157,6 +159,17 @@ def _principal(request: Request, api_key: str | None) -> str:
 
 
 _MONTH_S = 30 * 86_400
+
+
+def _mask(email: str | None) -> str | None:
+    """j****a@ghostdroid.dev — enough to recognise your own address, not enough
+    to be worth harvesting if a key ever leaks."""
+    if not email or "@" not in email:
+        return None
+    local, _, domain = email.partition("@")
+    if len(local) <= 2:
+        return f"{local[0]}*@{domain}"
+    return f"{local[0]}{'*' * (len(local) - 2)}{local[-1]}@{domain}"
 
 
 def _limit_for(api_key: str | None) -> tuple[int, int]:
@@ -226,8 +239,8 @@ async def submit_scan(
     # refusing is free bandwidth for an abuser and a slow error for everyone.
     if metered and public.used(principal, window) >= limit:
         wait = public.next_reset(principal, window)
-        plan = "Free tier is {} scans per day".format(limit) if api_key is None \
-            else "Your plan allows {} scans per month".format(limit)
+        plan = f"Free tier is {limit} scans per day" if api_key is None \
+            else f"Your plan allows {limit} scans per month"
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS,
             f"{plan}. Resets in {wait // 3600}h {(wait % 3600) // 60}m. "
@@ -447,10 +460,28 @@ async def stripe_webhook(request: Request) -> JSONResponse:
 
     result = apply_event(event, billing)
     if result.get("action") == "key_issued":
-        # Wire this to email. Until then the log is the delivery mechanism —
-        # said plainly so it is not mistaken for a finished feature.
         log.warning("PROVISIONED %s key for %s -> %s",
                     result["tier"], result.get("email") or "NO-EMAIL", result["key"])
+        tier_obj = TIERS.get(result["tier"])
+        if result.get("email"):
+            subject, body = mailer.key_delivery(
+                key=result["key"],
+                tier_name=tier_obj.name if tier_obj else result["tier"],
+                monthly_scans=tier_obj.monthly_scans if tier_obj else 0,
+                base_url=settings.public_url.rstrip("/"),
+            )
+            # Deliberately not awaited into the response path and never raised:
+            # the key is already provisioned, and a mail failure that 500s here
+            # makes Stripe retry, which hits the idempotency guard and issues
+            # nothing — leaving a paying customer with no key and no error.
+            delivered = await asyncio.to_thread(
+                mailer.send, api_key=settings.resend_api_key,
+                sender=settings.mail_from, to=result["email"],
+                subject=subject, text=body,
+            )
+            if not delivered:
+                log.error("KEY NOT DELIVERED to %s — send it manually: %s",
+                          result["email"], result["key"])
         if result.get("email_missing"):
             log.error(
                 "NO EMAIL on session %s. This key cannot be delivered and the "
@@ -461,6 +492,66 @@ async def stripe_webhook(request: Request) -> JSONResponse:
             )
     return JSONResponse({"received": True, **{k: v for k, v in result.items()
                                               if k != "key"}})
+
+
+@app.post("/v1/keys/recover", response_model=RecoverOut,
+          summary="Re-send an API key to the address that paid")
+async def recover_key(request: Request, payload: RecoverIn) -> RecoverOut:
+    # Same answer either way. Branching on whether the address exists turns
+    # this into a customer-list oracle: anyone could probe addresses to learn
+    # who pays for the product.
+    generic = RecoverOut(
+        sent=True,
+        message="If that address has an active subscription, the key is on its way.",
+    )
+
+    if not valid_email(payload.email):
+        return generic
+
+    # Rate limit on the ADDRESS, not the IP. Limiting by IP lets one attacker
+    # spread a mail-bomb across proxies; limiting by address caps how many
+    # messages any one inbox can be made to receive, which is the actual harm.
+    bucket = f"recover:{payload.email.strip().lower()}"
+    if public.used(bucket, 86_400) >= settings.recover_per_day:
+        return generic
+    public.charge(bucket)
+
+    row = billing.active_key_for_email(payload.email)
+    if row is None:
+        return generic
+
+    tier = TIERS.get(row["tier"])
+    subject, body = mailer.key_recovery(
+        key=row["key"], tier_name=tier.name if tier else row["tier"],
+        base_url=settings.public_url.rstrip("/"),
+    )
+    await asyncio.to_thread(
+        mailer.send, api_key=settings.resend_api_key, sender=settings.mail_from,
+        to=row["email"], subject=subject, text=body,
+    )
+    return generic
+
+
+@app.get("/v1/account", response_model=AccountOut, summary="Your plan and usage")
+async def account(
+    request: Request,
+    api_key: Annotated[str | None, Depends(require_api_key)] = None,
+) -> AccountOut:
+    if not api_key:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "This endpoint needs an API key.")
+    row = billing.lookup(api_key)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No subscription for that key.")
+    tier = TIERS.get(row["tier"])
+    limit = tier.monthly_scans if tier else -1
+    used = public.used(_principal(request, api_key), _MONTH_S)
+    return AccountOut(
+        tier=row["tier"], status=row["status"],
+        email_masked=_mask(row.get("email")),
+        limit=limit, used=used,
+        remaining=(max(0, limit - used) if limit >= 0 else -1),
+        resets_in_s=public.next_reset(_principal(request, api_key), _MONTH_S),
+    )
 
 
 @app.exception_handler(HTTPException)

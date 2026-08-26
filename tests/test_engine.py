@@ -10,10 +10,11 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import analyze_path, diff_reports          # noqa: E402
-from core.axml import parse_axml                     # noqa: E402
-from core.dex import parse_dex                       # noqa: E402
-from tests.fixtures import AxmlBuilder, build_apk, build_dex  # noqa: E402
+from core import Policy, PolicyError, analyze_path, diff_reports
+from core.policy import DEFAULT_POLICY_TOML
+from core.axml import parse_axml
+from core.dex import parse_dex
+from tests.fixtures import AxmlBuilder, build_apk, build_dex
 
 PASS = FAIL = 0
 
@@ -215,7 +216,98 @@ def main() -> int:
           str(brep2["errors"]))
     check("good dex still analysed", len(brep2["sdks"]) >= 4, str(len(brep2["sdks"])))
 
-    print("\n\033[1m[8] Ambiguous-namespace false positives\033[0m")
+    print("\n\033[1m[8] Policy engine\033[0m")
+    import tomllib as _toml
+
+    pol = Policy.from_dict(_toml.loads(DEFAULT_POLICY_TOML))
+    check("shipped default policy parses", len(pol.rules) == 8, str(len(pol.rules)))
+
+    # The shipped policy contains drift rules. A first scan has no baseline, so
+    # if those raised instead of skipping, the default config would fail on the
+    # very first run a customer ever does.
+    d0 = pol.evaluate(rep).to_dict()
+    check("drift rules skip without a baseline", len(d0["skipped"]) == 3, str(d0["skipped"]))
+    check("non-drift rules still enforce",
+          any(r["matched"] for r in d0["results"]), str(d0["summary"]))
+    check("debuggable build is blocked",
+          any(r["rule_id"] == "no-debuggable-release" and r["matched"]
+              for r in d0["results"]), str(d0["results"]))
+    check("blocked implies exit-worthy", d0["blocked"] is True)
+
+    d1 = pol.evaluate(rep, drift).to_dict()
+    check("with a baseline, drift rules run", not d1["skipped"], str(d1["skipped"]))
+
+    clean = pol.evaluate(base).to_dict()
+    check("clean build passes the policy", clean["blocked"] is False, clean["summary"])
+
+    # waivers
+    waiver = Policy.from_dict({
+        "meta": {"name": "w"},
+        "rule": [
+            {"id": "block-dev-id", "action": "block", "when": {"finding": "sink.device_id"}},
+            {"id": "accept", "action": "ignore", "expires": "2099-01-01",
+             "when": {"finding": "sink.device_id"}},
+        ]})
+    wd = waiver.evaluate(rep).to_dict()
+    check("live waiver suppresses the block", wd["blocked"] is False, str(wd["summary"]))
+    check("waiver is reported, not silent", "accept" in wd["waived"], str(wd["waived"]))
+
+    stale = Policy.from_dict({
+        "meta": {"name": "w2"},
+        "rule": [
+            {"id": "block-dev-id", "action": "block", "when": {"finding": "sink.device_id"}},
+            {"id": "old", "action": "ignore", "expires": "2020-01-01",
+             "when": {"finding": "sink.device_id"}},
+        ]})
+    sd = stale.evaluate(rep).to_dict()
+    check("expired waiver stops suppressing", sd["blocked"] is True, str(sd["summary"]))
+    check("expired waiver is announced", sd["expired_waivers"], str(sd["expired_waivers"]))
+
+    # validation
+    for label, bad in (
+        ("waiver without an expiry",
+         {"meta": {}, "rule": [{"id": "x", "action": "ignore", "when": {"finding": "a"}}]}),
+        ("unknown condition",
+         {"meta": {}, "rule": [{"id": "x", "action": "block", "when": {"findings": "a"}}]}),
+        ("unknown action",
+         {"meta": {}, "rule": [{"id": "x", "action": "explode", "when": {"finding": "a"}}]}),
+        ("duplicate rule id",
+         {"meta": {}, "rule": [{"id": "x", "action": "block", "when": {"finding": "a"}},
+                               {"id": "x", "action": "warn", "when": {"finding": "b"}}]}),
+        ("empty when block",
+         {"meta": {}, "rule": [{"id": "x", "action": "block", "when": {}}]}),
+        ("no rules at all", {"meta": {}, "rule": []}),
+    ):
+        try:
+            Policy.from_dict(bad)
+            check(label + " rejected", False, "accepted!")
+        except PolicyError:
+            check(label + " rejected", True)
+
+    # glob + allowlist, the conditions agencies actually use
+    globbed = Policy.from_dict({"meta": {}, "rule": [
+        {"id": "g", "action": "block", "when": {"finding": "manifest.*"}}]})
+    check("glob matches a finding family",
+          globbed.evaluate(rep).to_dict()["blocked"] is True)
+
+    allow = Policy.from_dict({"meta": {}, "rule": [
+        {"id": "a", "action": "block",
+         "when": {"sdk_not_in": [s["slug"] for s in rep["sdks"]]}}]})
+    check("allowlist covering every SDK does not fire",
+          allow.evaluate(rep).to_dict()["blocked"] is False)
+    allow2 = Policy.from_dict({"meta": {}, "rule": [
+        {"id": "a", "action": "block", "when": {"sdk_not_in": ["okhttp"]}}]})
+    check("allowlist catches an unapproved SDK",
+          allow2.evaluate(rep).to_dict()["blocked"] is True)
+
+    # ANDed conditions
+    anded = Policy.from_dict({"meta": {}, "rule": [
+        {"id": "and", "action": "block",
+         "when": {"debuggable": True, "finding": "no.such.finding"}}]})
+    check("all conditions must hold (AND, not OR)",
+          anded.evaluate(rep).to_dict()["blocked"] is False)
+
+    print("\n\033[1m[9] Ambiguous-namespace false positives\033[0m")
     # com/facebook/common and com/facebook/bolts are shared between Meta's
     # tracking SDK, Fresco (image loading) and standalone Bolts-Android. A
     # corpus run tempted me into matching them; that would declare "shares data
@@ -243,7 +335,7 @@ def main() -> int:
     check("Fresco-only app declares nothing",
           not frep["declaration"], str(frep["declaration"]))
 
-    print("\n\033[1m[9] Architecture boundary\033[0m")
+    print("\n\033[1m[10] Architecture boundary\033[0m")
     import subprocess
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     r = subprocess.run(

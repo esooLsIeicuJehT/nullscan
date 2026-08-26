@@ -23,6 +23,7 @@ problem, same answer.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 from concurrent.futures import ProcessPoolExecutor
@@ -62,7 +63,11 @@ class Dispatcher:
         task.add_done_callback(self._inflight.discard)
 
     async def _run(self, job_id: str, apk_path: str) -> None:
-        assert self._pool is not None, "dispatcher not started"
+        if self._pool is None:
+            # Not an assert: `python -O` strips those, and the failure then
+            # surfaces as an AttributeError inside the executor call instead
+            # of naming the actual mistake.
+            raise RuntimeError("dispatcher.start() was never called")
         loop = asyncio.get_running_loop()
         self.store.mark_running(job_id)
         try:
@@ -71,18 +76,16 @@ class Dispatcher:
                 fut, timeout=settings.job_timeout_s
             )
             self.store.finish(job_id, report)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.store.fail(job_id, f"exceeded {settings.job_timeout_s}s", state="timeout")
         except asyncio.CancelledError:
             self.store.fail(job_id, "cancelled during shutdown")
             raise
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.exception("job %s failed", job_id)
             self.store.fail(job_id, f"{type(exc).__name__}: {exc}")
         finally:
             # The upload is the largest artefact in the system. Never let a
             # failure path leak it — that's how a scanner fills a Railway volume.
-            try:
+            with contextlib.suppress(OSError):
                 os.unlink(apk_path)
-            except OSError:
-                pass

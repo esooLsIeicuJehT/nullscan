@@ -191,7 +191,7 @@ def analyze_path(path: str, *, deep_strings: bool = True) -> dict[str, Any]:
         try:
             manifest = _manifest_facts(axml.parse_axml(apk.read("AndroidManifest.xml")))
             findings.extend(_manifest_findings(manifest))
-        except (axml.AxmlError, KeyError, Exception) as exc:  # noqa: BLE001
+        except (axml.AxmlError, KeyError, Exception) as exc:
             errors.append(f"manifest: {type(exc).__name__}: {exc}")
 
         # --- dex stage -------------------------------------------------------
@@ -201,7 +201,7 @@ def analyze_path(path: str, *, deep_strings: bool = True) -> dict[str, Any]:
         for dex_name in apk.dex_names():
             try:
                 tables = dex.parse_dex(apk.read(dex_name), dex_name)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 errors.append(f"{dex_name}: {type(exc).__name__}: {exc}")
                 continue
 
@@ -258,7 +258,7 @@ _SEV_ORDER = {Severity.HIGH: 0, Severity.MEDIUM: 1, Severity.LOW: 2, Severity.IN
 
 
 def _now() -> str:
-    return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+    return _dt.datetime.now(_dt.UTC).isoformat(timespec="seconds")
 
 
-__all__ = ["analyze_path", "ENGINE_VERSION", "SCHEMA_VERSION", "DataCategory"]
+__all__ = ["ENGINE_VERSION", "SCHEMA_VERSION", "DataCategory", "analyze_path"]

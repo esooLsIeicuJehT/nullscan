@@ -44,10 +44,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core import analyze_path                       # noqa: E402
-from core.container import ContainerError, open_apk  # noqa: E402
-from core.dex import parse_dex                      # noqa: E402
-from core.signatures import SDK_SIGNATURES          # noqa: E402
+from core import analyze_path
+from core.container import ContainerError, open_apk
+from core.dex import parse_dex
+from core.signatures import SDK_SIGNATURES
 
 # Platform / language namespaces are never SDK candidates.
 PLATFORM_PREFIXES = (
@@ -191,7 +191,7 @@ def probe(path: str) -> dict:
             for dn in dex_names:
                 try:
                     tables = parse_dex(apk.read(dn), dn)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     continue
                 for cls in tables.defined_classes:
                     total += 1
@@ -235,7 +235,7 @@ def probe(path: str) -> dict:
         row["status"] = "rejected"
         row["failure"] = str(exc)[:300]
         row["elapsed_s"] = round(time.time() - t0, 2)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         row["status"] = "CRASH"
         row["failure"] = f"{type(exc).__name__}: {exc}"[:300]
         row["trace"] = traceback.format_exc()[-1200:]
@@ -430,7 +430,7 @@ def main() -> int:
             src = futures[fut]
             try:
                 res = fut.result(timeout=a.timeout)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 res = {"row": {"file": os.path.basename(src), "status": "TIMEOUT",
                                "failure": str(exc)[:200], "size_mb": 0, "elapsed_s": a.timeout,
                                "package": "", "target_sdk": "", "dex_count": 0,

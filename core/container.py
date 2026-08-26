@@ -73,7 +73,7 @@ class ApkContainer:
     def close(self) -> None:
         self._zf.close()
 
-    def __enter__(self) -> "ApkContainer":
+    def __enter__(self) -> ApkContainer:
         return self
 
     def __exit__(self, *exc: object) -> None:

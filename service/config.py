@@ -17,8 +17,11 @@ def _int(name: str, default: int) -> int:
 class Settings:
     # upload limits — enforced by streaming, never by trusting Content-Length
     max_upload_bytes: int = _int("NULLSCAN_MAX_UPLOAD_MB", 512) * 1024 * 1024
-    upload_dir: str = os.environ.get("NULLSCAN_UPLOAD_DIR", "/tmp/nullscan")
-    db_path: str = os.environ.get("NULLSCAN_DB", "/tmp/nullscan/jobs.db")
+    # /tmp only as a LOCAL DEV default. Production sets these to a mounted
+    # volume (see railway.toml); on /tmp a redeploy silently discards every
+    # job, API key and waitlist address.
+    upload_dir: str = os.environ.get("NULLSCAN_UPLOAD_DIR", "/tmp/nullscan")  # noqa: S108
+    db_path: str = os.environ.get("NULLSCAN_DB", "/tmp/nullscan/jobs.db")  # noqa: S108
 
     # workers: analysis is CPU-bound pure Python, so processes, not threads.
     workers: int = _int("NULLSCAN_WORKERS", max(1, (os.cpu_count() or 2) - 1))
@@ -47,6 +50,12 @@ class Settings:
     stripe_secret: str = os.environ.get("STRIPE_SECRET_KEY", "")
     stripe_webhook_secret: str = os.environ.get("STRIPE_WEBHOOK_SECRET", "")
     public_url: str = os.environ.get("NULLSCAN_PUBLIC_URL", "http://localhost:8000")
+
+    # email — unconfigured means keys are logged instead of sent, which is the
+    # behaviour you already had, so nothing regresses in test mode.
+    resend_api_key: str = os.environ.get("RESEND_API_KEY", "")
+    mail_from: str = os.environ.get("NULLSCAN_MAIL_FROM", "NULLSCAN <keys@nullscan.dev>")
+    recover_per_day: int = _int("NULLSCAN_RECOVER_PER_DAY", 5)
 
 
 settings = Settings()
