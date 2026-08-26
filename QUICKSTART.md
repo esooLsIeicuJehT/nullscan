@@ -247,6 +247,19 @@ Resend allows that sender with no verification, but it will only deliver to the
 address you signed up with. Good enough to confirm the pipeline; you need your
 own domain before real customers.
 
+**Keys are stored as SHA-256(pepper + key), never in plaintext.** Set
+`NULLSCAN_KEY_PEPPER` to a long random string so a leaked database alone
+cannot be used to forge a lookup. The raw key exists only in memory at
+issuance, long enough to email it.
+
+Upgrading from an earlier version migrates automatically: existing keys are
+hashed in place and keep working, and the plaintext is scrubbed from the file
+(VACUUM plus a WAL checkpoint — neither alone is sufficient).
+
+"Lost my key" **rotates**: we cannot resend what we do not store, so recovery
+issues a replacement and revokes the old one. That is also the right answer
+when the real reason for the request is that the key leaked.
+
 Keys live in SQLite with a tier, a status and a Stripe subscription id, so
 cancellation is a state change rather than a redeploy. A lapsed key gets
 **402 Payment Required**, not a silent downgrade to the free tier — silently

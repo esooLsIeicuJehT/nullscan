@@ -123,15 +123,24 @@ Manage billing: {base_url}/#account
 
 def key_recovery(*, key: str, tier_name: str, base_url: str) -> tuple[str, str]:
     return (
-        "Your NULLSCAN API key",
-        f"""You asked us to re-send the API key for this address.
+        "Your new NULLSCAN API key",
+        f"""You asked for the API key on this address.
+
+We do not store your key — only a one-way hash of it — so we cannot send
+the original back. Instead we have issued a replacement:
 
     {key}
 
 Plan: {tier_name}
-Manage billing: {base_url}/#account
 
-If this wasn't you, nothing has changed — the key is unchanged and no one
-else received it. Keys are only ever sent to the address that paid.
+IMPORTANT: your previous key stopped working the moment this was issued.
+Update your CI secrets and any local config.
+
+If this wasn't you, someone knows your email address and nothing more —
+they did not receive this key, and it only ever goes to the address that
+paid. But your old key has been revoked, so you will need to use the one
+above.
+
+Manage billing: {base_url}/#account
 """,
     )

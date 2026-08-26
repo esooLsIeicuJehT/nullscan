@@ -56,6 +56,15 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> str | None:
         if row is not None:
             if row["status"] == "active":
                 return x_api_key
+            if row["status"] == "rotated":
+                # A rotated key is not a billing problem, and telling the
+                # customer to "update billing" sends them to Stripe to fix
+                # something Stripe cannot fix.
+                raise HTTPException(
+                    status.HTTP_401_UNAUTHORIZED,
+                    "This key was replaced. Use the key from your most recent "
+                    "NULLSCAN email, or request a new one at /#account.",
+                )
             raise HTTPException(
                 status.HTTP_402_PAYMENT_REQUIRED,
                 f"This key is {row['status']}. Update billing to reactivate it.",

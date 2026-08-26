@@ -20,6 +20,7 @@ TWO THINGS THAT MATTER COMMERCIALLY
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import re
 import sqlite3
@@ -49,8 +50,24 @@ class PublicStore:
     def __init__(self, db_path: str) -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self._path = db_path
-        with self._conn() as c:
+        with self._session() as c:
             c.executescript(_SCHEMA)
+
+    @contextlib.contextmanager
+    def _session(self) -> Iterator[sqlite3.Connection]:
+        """Open a connection and ALWAYS close it.
+
+        `with sqlite3.connect(...) as c` is a TRANSACTION context manager, not
+        a resource one — it commits on exit and leaves the connection open. In
+        a long-lived service that leaks a handle per query, and it made the
+        key-hashing migration fail with "database is locked" because the schema
+        connection from __init__ was still holding the file.
+        """
+        c = self._conn()
+        try:
+            yield c
+        finally:
+            c.close()
 
     def _conn(self) -> sqlite3.Connection:
         c = sqlite3.connect(self._path, timeout=15.0, isolation_level=None)
@@ -62,7 +79,7 @@ class PublicStore:
     # --- quota ---------------------------------------------------------------
     def used(self, principal: str, window_s: int) -> int:
         cutoff = time.time() - window_s
-        with self._conn() as c:
+        with self._session() as c:
             row = c.execute(
                 "SELECT COUNT(*) n FROM quota WHERE principal=? AND at>?",
                 (principal, cutoff),
@@ -70,14 +87,14 @@ class PublicStore:
         return int(row["n"])
 
     def charge(self, principal: str) -> None:
-        with self._conn() as c:
+        with self._session() as c:
             c.execute("INSERT INTO quota (principal, at) VALUES (?,?)",
                       (principal, time.time()))
 
     def next_reset(self, principal: str, window_s: int) -> int:
         """Seconds until the oldest charge in the window expires."""
         cutoff = time.time() - window_s
-        with self._conn() as c:
+        with self._session() as c:
             row = c.execute(
                 "SELECT MIN(at) t FROM quota WHERE principal=? AND at>?",
                 (principal, cutoff),
@@ -87,14 +104,14 @@ class PublicStore:
         return max(0, int(row["t"] + window_s - time.time()))
 
     def purge_quota(self, window_s: int) -> int:
-        with self._conn() as c:
+        with self._session() as c:
             cur = c.execute("DELETE FROM quota WHERE at < ?", (time.time() - window_s,))
         return cur.rowcount
 
     # --- waitlist ------------------------------------------------------------
     def add_email(self, email: str, source: str = "web") -> bool:
         """True if newly added, False if already present. Never raises on dupes."""
-        with self._conn() as c:
+        with self._session() as c:
             cur = c.execute(
                 "INSERT OR IGNORE INTO waitlist (email, source, created_at) VALUES (?,?,?)",
                 (email.strip().lower(), source, time.time()),
@@ -102,7 +119,7 @@ class PublicStore:
         return cur.rowcount == 1
 
     def waitlist_count(self) -> int:
-        with self._conn() as c:
+        with self._session() as c:
             return int(c.execute("SELECT COUNT(*) n FROM waitlist").fetchone()["n"])
 
 

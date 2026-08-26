@@ -111,6 +111,17 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     if purged:
         log.info("purged %d expired job(s)", purged)
     public.purge_quota(settings.free_window_s)
+
+    # Anything here is a person who has been charged and received nothing.
+    # We cannot re-send the original key (we only hold its hash), so the sweep
+    # reports rather than retries — the operator rotates from the account page
+    # or the customer uses recovery. Silence would be worse than a loud log.
+    stuck = billing.undelivered()
+    if stuck:
+        log.error("%d PAID KEY(S) NEVER DELIVERED — customers charged with "
+                  "nothing to show for it: %s", len(stuck),
+                  ", ".join(f"{r['key_fp']}({r['delivery_attempts']} attempts)"
+                            for r in stuck[:10]))
     yield
     dispatcher.shutdown()
 
@@ -471,8 +482,14 @@ async def stripe_webhook(request: Request) -> JSONResponse:
 
     result = apply_event(event, billing)
     if result.get("action") == "key_issued":
-        log.warning("PROVISIONED %s key for %s -> %s",
-                    result["tier"], result.get("email") or "NO-EMAIL", result["key"])
+        # Fingerprint only. Logs are copied into error trackers, hosting
+        # dashboards, backups and support tickets — a raw key here undoes the
+        # hashing at rest entirely, because the plaintext just lives somewhere
+        # else instead.
+        log.warning("PROVISIONED tier=%s customer=%s key_fp=%s",
+                    result["tier"],
+                    (event.get("data") or {}).get("object", {}).get("customer", "?"),
+                    result.get("key_fp", "?"))
         tier_obj = TIERS.get(result["tier"])
         if result.get("email"):
             subject, body = mailer.key_delivery(
@@ -490,9 +507,15 @@ async def stripe_webhook(request: Request) -> JSONResponse:
                 sender=settings.mail_from, to=result["email"],
                 subject=subject, text=body,
             )
+            billing.mark_delivery(result["key_hash"],
+                                  "sent" if delivered else "failed",
+                                  "" if delivered else "mailer rejected the send")
             if not delivered:
-                log.error("KEY NOT DELIVERED to %s — send it manually: %s",
-                          result["email"], result["key"])
+                # No raw key in the log. The startup sweep retries it, and if
+                # mail is genuinely broken the fingerprint identifies the row
+                # without exposing the credential.
+                log.error("KEY NOT DELIVERED key_fp=%s to=%s — queued for retry",
+                          result.get("key_fp"), result["email"])
         if result.get("email_missing"):
             log.error(
                 "NO EMAIL on session %s. This key cannot be delivered and the "
@@ -527,19 +550,21 @@ async def recover_key(request: Request, payload: RecoverIn) -> RecoverOut:
         return generic
     public.charge(bucket)
 
-    row = billing.active_key_for_email(payload.email)
-    if row is None:
+    rotated = billing.rotate_for_email(payload.email)
+    if rotated is None:
         return generic
+    new_key, tier_slug = rotated
 
-    tier = TIERS.get(row["tier"])
+    tier = TIERS.get(tier_slug)
     subject, body = mailer.key_recovery(
-        key=row["key"], tier_name=tier.name if tier else row["tier"],
+        key=new_key, tier_name=tier.name if tier else tier_slug,
         base_url=settings.public_url.rstrip("/"),
     )
     await asyncio.to_thread(
         mailer.send, api_key=settings.resend_api_key, sender=settings.mail_from,
-        to=row["email"], subject=subject, text=body,
+        to=payload.email.strip().lower(), subject=subject, text=body,
     )
+    log.info("ROTATED key for a recovery request (email withheld from logs)")
     return generic
 
 

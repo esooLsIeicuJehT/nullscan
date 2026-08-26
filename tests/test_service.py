@@ -328,8 +328,10 @@ def main() -> int:
               dup["action"] == "duplicate_ignored", str(dup))
         evt2 = dict(evt, id="evt_2")
         dup2 = apply_event(evt2, bstore)
-        check("same subscription under a new event id reuses the key",
-              dup2.get("key") == key, str(dup2))
+        check("same subscription under a new event id issues no second key",
+              dup2["action"] == "already_provisioned", str(dup2))
+        check("and proves it by fingerprint, which cannot be used as a credential",
+              dup2.get("key_fp") and "key" not in dup2, str(dup2))
 
         # --- key works, and quota follows the tier ---
         r = client.get("/v1/quota", headers={"X-API-Key": key})
@@ -406,8 +408,10 @@ def main() -> int:
             check("recover returns 200", r.status_code == 200, r.text)
             check("recover sent the mail", any(k["to"] == "mailme@studio.dev" for k in sent),
                   str([k.get("to") for k in sent]))
-            check("recovered mail carries the key",
-                  any(key2 in k.get("text", "") for k in sent))
+            check("recovered mail carries a key",
+                  any("nsk_" in k.get("text", "") for k in sent))
+            check("recovery does NOT resend the original (it is not stored)",
+                  not any(key2 in k.get("text", "") for k in sent))
 
             before = len(sent)
             r2 = client.post("/v1/keys/recover", json={"email": "nobody@nowhere.dev"})
@@ -426,10 +430,17 @@ def main() -> int:
                   len(sent) - before <= cfg.recover_per_day,
                   f"{len(sent) - before} emails sent")
 
+            # Every recovery rotates, so the live key is the one in the LAST
+            # email sent — capture it after the rate-limit loop, not before.
+            key2 = [ln.strip() for k in sent for ln in k.get("text", "").splitlines()
+                    if ln.strip().startswith("nsk_")][-1]
+
             # --- account ---
             r = client.get("/v1/account", headers={"X-API-Key": key2})
             a = r.json()
             check("account 200", r.status_code == 200, r.text)
+            if r.status_code != 200:
+                raise SystemExit(1)
             check("account reports tier", a["tier"] == "indie", r.text)
             check("email is masked, not exposed",
                   a["email_masked"] == "m****e@studio.dev", str(a["email_masked"]))
@@ -438,7 +449,139 @@ def main() -> int:
         finally:
             _m.send = real_send
 
-        print("\n\033[1m[14] OpenAPI contract is real\033[0m")
+        print("\n\033[1m[14] Keys are not recoverable from the database\033[0m")
+        import sqlite3 as _sq
+
+        from service.billing import hash_key
+
+        conn = _sq.connect(cfg.db_path)
+        conn.row_factory = _sq.Row
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(api_keys)")}
+        check("no plaintext key column in the schema",
+              "key" not in cols or all(
+                  r[0] is None for r in conn.execute("SELECT key FROM api_keys")),
+              str(sorted(cols)))
+        dump = " ".join(str(v) for row in conn.execute("SELECT * FROM api_keys")
+                        for v in tuple(row))
+        check("no issued key appears anywhere in the table",
+              key not in dump and key2 not in dump)
+        check("the stored hash matches the key we hold",
+              any(r["key_hash"] == hash_key(key2)
+                  for r in conn.execute("SELECT key_hash FROM api_keys")))
+        conn.close()
+
+        print("\n\033[1m[15] Crash-safe webhook fulfilment\033[0m")
+        # The subtle one: the old code marked an event seen BEFORE fulfilling.
+        # A crash in between meant Stripe's retry saw "already handled" and did
+        # nothing, leaving a paid customer with no key and no error.
+        ev_id = "evt_crash_sim"
+        st = bstore.begin_event(ev_id, "checkout.session.completed")
+        check("first delivery claims the event", st == "new", st)
+        check("a concurrent duplicate is held off",
+              bstore.begin_event(ev_id, "x") == "done")
+
+        # simulate the crash: never completed, and the row goes stale
+        with bstore._conn() as _c:
+            _c.execute("UPDATE stripe_events SET received_at=? WHERE event_id=?",
+                       (time.time() - 10_000, ev_id))
+        check("after a crash the retry is allowed through",
+              bstore.begin_event(ev_id, "x") == "retry")
+        bstore.complete_event(ev_id)
+        check("once fulfilled, retries are ignored again",
+              bstore.begin_event(ev_id, "x") == "done")
+
+        before_keys = len(list(bstore._conn().execute("SELECT 1 FROM api_keys")))
+        dup_evt = {"id": "evt_dup_guard", "type": "checkout.session.completed",
+                   "data": {"object": {"metadata": {"tier": "indie"},
+                                       "subscription": "sub_mail", "customer": "cus_m",
+                                       "customer_details": {"email": "mailme@studio.dev"}}}}
+        r1 = apply_event(dup_evt, bstore)
+        after_keys = len(list(bstore._conn().execute("SELECT 1 FROM api_keys")))
+        check("an event for an already-provisioned subscription issues nothing new",
+              after_keys == before_keys and r1["action"] == "already_provisioned", str(r1))
+        check("and it returns a fingerprint, never a key",
+              "key" not in r1 and r1.get("key_fp"), str(r1))
+
+        print("\n\033[1m[16] Recovery rotates rather than resending\033[0m")
+        # A fresh address: the earlier section exhausted the per-address
+        # recovery quota for mailme@, and that limit is doing exactly what it
+        # should — reusing it here would test the rate limiter, not rotation.
+        import service.mailer as _m2
+        sent2: list[dict] = []
+        real2 = _m2.send
+        _m2.send = lambda **kw: (sent2.append(kw) or True)
+        rot_evt = {"id": "evt_rot", "type": "checkout.session.completed",
+                   "data": {"object": {"metadata": {"tier": "indie"},
+                                       "subscription": "sub_rot", "customer": "cus_rot",
+                                       "customer_details": {"email": "rot@studio.dev"}}}}
+        rot_res = apply_event(rot_evt, bstore)
+        original = rot_res["key"]
+        check("fresh subscription provisioned", rot_res["action"] == "key_issued", str(rot_res))
+        check("original key works",
+              client.get("/v1/account", headers={"X-API-Key": original}).status_code == 200)
+
+        sent = sent2
+        r = client.post("/v1/keys/recover", json={"email": "rot@studio.dev"})
+        check("recovery still returns the generic reply", r.status_code == 200)
+        check("a replacement key was mailed", len(sent) == 1, str(len(sent)))
+        body_sent = sent[-1]["text"]
+        check("the email states the old key is dead",
+              "stopped working" in body_sent, body_sent[:120])
+        new_key = [ln.strip() for ln in body_sent.splitlines()
+                   if ln.strip().startswith("nsk_")][0]
+        check("the replacement is a different key", new_key != original)
+        check("the replacement authenticates",
+              client.get("/v1/account", headers={"X-API-Key": new_key}).status_code == 200)
+        old_status = client.get("/v1/account", headers={"X-API-Key": original}).status_code
+        check("the old key stops working immediately", old_status == 401, str(old_status))
+        check("and says so clearly rather than blaming billing",
+              "replaced" in client.get("/v1/account",
+                                       headers={"X-API-Key": original}).text)
+        _m2.send = real2
+
+        print("\n\033[1m[17] Upgrading a live database\033[0m")
+        # This is what runs against production on the next deploy. A migration
+        # that breaks an existing customer's key is worse than the plaintext
+        # it was written to remove.
+        legacy = os.path.join(_TMP, "legacy.db")
+        lc = _sq.connect(legacy)
+        lc.executescript("""
+            CREATE TABLE api_keys (key TEXT PRIMARY KEY, tier TEXT NOT NULL,
+              email TEXT, status TEXT NOT NULL DEFAULT 'active', customer_id TEXT,
+              subscription_id TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL);
+            CREATE TABLE stripe_events (event_id TEXT PRIMARY KEY, kind TEXT,
+              handled_at REAL NOT NULL);""")
+        OLD_KEY = "nsk_legacy_plaintext_key_from_v0_3_0"
+        lc.execute("INSERT INTO api_keys VALUES (?,?,?,?,?,?,?,?)",
+                   (OLD_KEY, "indie", "legacy@studio.dev", "active",
+                    "cus_legacy", "sub_legacy", 1.0, 1.0))
+        lc.execute("INSERT INTO stripe_events VALUES ('evt_historic','x',1.0)")
+        lc.commit()
+        lc.close()
+
+        blob = open(legacy, "rb").read()
+        check("legacy db really did hold plaintext", OLD_KEY.encode() in blob)
+
+        from service.billing import BillingStore as _BS
+        migrated = _BS(legacy)
+
+        blob = open(legacy, "rb").read()
+        for sfx in ("-wal", "-shm", "-journal"):
+            if os.path.exists(legacy + sfx):
+                blob += open(legacy + sfx, "rb").read()
+        check("plaintext is scrubbed from the file AND its sidecars",
+              OLD_KEY.encode() not in blob)
+        lrow = migrated.lookup(OLD_KEY)
+        check("an existing customer's key still authenticates",
+              lrow is not None and lrow["status"] == "active", str(lrow))
+        check("it is now stored only as a hash",
+              lrow["key_hash"] == hash_key(OLD_KEY))
+        check("historic events stay done (no re-fulfilment on retry)",
+              migrated.begin_event("evt_historic", "x") == "done")
+        check("the migrated store can still issue keys",
+              migrated.issue("indie", "n@e.co", "c", "s").startswith("nsk_"))
+
+        print("\n\033[1m[18] OpenAPI contract is real\033[0m")
         spec = client.get("/openapi.json").json()
         check("POST /v1/scans documented", "/v1/scans" in spec["paths"])
         check("diff is POST only",

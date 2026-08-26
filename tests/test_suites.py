@@ -34,7 +34,7 @@ RESULT = re.compile(r"(\d+)\s+passed,\s+(\d+)\s+failed")
 
 # Raise these when you add tests; never lower them to make a build pass.
 MIN_ENGINE_TESTS = 97
-MIN_SERVICE_TESTS = 95
+MIN_SERVICE_TESTS = 121
 
 
 def _run(script: str, timeout: int) -> tuple[int, int, str]:
