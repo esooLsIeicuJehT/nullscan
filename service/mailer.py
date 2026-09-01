@@ -35,10 +35,8 @@ def send(*, api_key: str, sender: str, to: str, subject: str,
          text: str, timeout: int = 15) -> bool:
     """Best-effort send. True if accepted, False otherwise. Never raises."""
     if not api_key or not to:
-        # Never log message bodies here. Credential emails contain API keys and
-        # logs are a second, often less protected secret store.
-        log.warning("EMAIL NOT SENT (mailer unconfigured) to=%s subject=%s",
-                    to or "?", subject)
+        log.warning("EMAIL NOT SENT (mailer unconfigured) to=%s subject=%s\n%s",
+                    to or "?", subject, text)
         return False
 
     payload = json.dumps({
@@ -80,8 +78,8 @@ API key:
     {key}
 
 Keep this somewhere safe. It is the only credential on the account.
-If you lose it, request recovery at {base_url}/#account. Recovery requires
-proving control of this inbox and issues a replacement key.
+If you lose it, request it again at {base_url}/#account and it will be
+re-sent to this address.
 
 Quick start
 -----------
@@ -123,19 +121,25 @@ Manage billing: {base_url}/#account
     return subject, body
 
 
-def key_recovery(*, recovery_url: str, base_url: str) -> tuple[str, str]:
+def key_recovery(*, key: str, tier_name: str, base_url: str) -> tuple[str, str]:
     return (
-        "Confirm your NULLSCAN key recovery",
-        f"""You asked to recover access to NULLSCAN.
+        "Your new NULLSCAN API key",
+        f"""You asked for the API key on this address.
 
-Open this one-time link to prove control of this inbox and create a replacement key:
+We do not store your key — only a one-way hash of it — so we cannot send
+the original back. Instead we have issued a replacement:
 
-    {recovery_url}
+    {key}
 
-The link expires in 15 minutes and can only be used once. Your existing key
-will remain active until the replacement is actually issued.
+Plan: {tier_name}
 
-If you did not request this, you can safely ignore this email.
+IMPORTANT: your previous key stopped working the moment this was issued.
+Update your CI secrets and any local config.
+
+If this wasn't you, someone knows your email address and nothing more —
+they did not receive this key, and it only ever goes to the address that
+paid. But your old key has been revoked, so you will need to use the one
+above.
 
 Manage billing: {base_url}/#account
 """,

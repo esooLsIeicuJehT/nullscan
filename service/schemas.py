@@ -208,15 +208,6 @@ class RecoverIn(BaseModel):
     email: str = Field(max_length=254)
 
 
-class RecoverConfirmIn(BaseModel):
-    token: str = Field(min_length=20, max_length=512)
-
-
-class RecoverConfirmOut(BaseModel):
-    key: str
-    tier: str
-
-
 class RecoverOut(BaseModel):
     """Deliberately says the same thing whether or not an account exists.
 
